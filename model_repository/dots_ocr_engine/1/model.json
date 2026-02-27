@@ -1,0 +1,13 @@
+{
+  "model": "rednote-hilab/dots.ocr",
+  "trust_remote_code": true,
+  "tensor_parallel_size": 1,
+  "gpu_memory_utilization": 0.9,
+  "dtype": "bfloat16",
+  "max_model_len": 10000,
+  "limit_mm_per_prompt": {
+    "image": 1
+  },
+  "mm_processor_cache_gb": 0,
+  "enable_prefix_caching": false
+}

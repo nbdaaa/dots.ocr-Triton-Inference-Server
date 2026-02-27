@@ -1,0 +1,22 @@
+{
+  "inputs": [
+    {
+      "name": "PROMPT",
+      "shape": [1],
+      "datatype": "BYTES",
+      "data": ["OCR this image and return markdown."]
+    },
+    {
+      "name": "IMAGE_B64",
+      "shape": [1],
+      "datatype": "BYTES",
+      "data": [""]
+    },
+    {
+      "name": "IMAGE_URL",
+      "shape": [1],
+      "datatype": "BYTES",
+      "data": ["https://cdn.thuvienphapluat.vn//uploads/tintuc/2022/07/19/du-thao.png"]
+    }
+  ]
+}
