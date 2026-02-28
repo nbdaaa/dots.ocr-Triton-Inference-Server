@@ -5,35 +5,59 @@
 Tài liệu này hướng dẫn cách:
 
 1. Khởi chạy Triton Inference Server với model repository đã chuẩn bị sẵn
-2. Gửi request test OCR bằng `curl` với ảnh từ URL
+2. Test OCR bằng `curl`
+3. Khắc phục lỗi Docker/NVIDIA runtime thường gặp
 
-## Yêu cầu trước khi chạy
+---
+
+## 1. Yêu cầu trước khi chạy
 
 * Đã cài **Docker**
-* Đã cài **NVIDIA Container Toolkit** để dùng được `--gpus all`
-* Đã chuẩn bị cấu trúc thư mục như sau:
+* Đã cài **NVIDIA Container Toolkit**
+* Host đã nhận GPU (`nvidia-smi` chạy được)
+* **NVIDIA Driver version phải >= `580.95.05`**
+
+* Model repository nằm tại:
 
 ```text
-└── workspace
-    ├── duthao.png
-    ├── model_repository
-        ├── dots_ocr
-        │   ├── 1
-        │   │   └── model.py
-        │   └── config.pbtxt
-        └── dots_ocr_engine
-            ├── 1
-            │   └── model.json
-            └── config.pbtxt
+workspace/model_repository
 ```
 
-* Thư mục cache Hugging Face đã tồn tại (nếu có) tại:
+* Cấu trúc thư mục:
 
 ```text
-~/.cache/huggingface
+workspace/model_repository/
+├── dots_ocr/
+│   ├── config.pbtxt
+│   └── 1/
+│       └── model.py
+└── dots_ocr_engine/
+    ├── config.pbtxt
+    └── 1/
+        └── model.json
 ```
 
-## 1. Khởi chạy Triton Server
+---
+
+## 2. Kiểm tra nhanh driver version
+
+Chạy:
+
+```bash
+nvidia-smi
+```
+
+hoặc lấy riêng version:
+
+```bash
+nvidia-smi --query-gpu=driver_version --format=csv,noheader
+```
+
+Nếu kết quả **nhỏ hơn `580.95.05`**, không nên dùng image `25.11-vllm-python-py3`. ([NVIDIA Docs][1])
+
+---
+
+## 3. Khởi chạy Triton Server
 
 Chạy lệnh sau trong terminal thứ nhất:
 
@@ -41,7 +65,7 @@ Chạy lệnh sau trong terminal thứ nhất:
 docker run --rm --gpus all \
   --network host \
   --ipc=host \
-  -v /workspace/model_repository:/models \
+  -v /home/workspace/model_repository:/models \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   nvcr.io/nvidia/tritonserver:25.11-vllm-python-py3 \
   tritonserver \
@@ -54,17 +78,42 @@ docker run --rm --gpus all \
 ### Giải thích nhanh
 
 * `--gpus all`: cho container dùng GPU
-* `--network host`: dùng network của máy host
-* `--ipc=host`: chia sẻ IPC để tối ưu hiệu năng
-* `-v /workspace/model_repository:/models`: mount model repository vào container
+* `--network host`: dùng network của host
+* `--ipc=host`: chia sẻ IPC
+* `-v /home/workspace/model_repository:/models`: mount model repository vào container
 * `-v ~/.cache/huggingface:/root/.cache/huggingface`: tái sử dụng cache model
 * `--http-port=54280`: Triton nhận HTTP request ở cổng `54280`
 
 > Giữ terminal này mở trong suốt quá trình test.
 
-## 2. Test model bằng `curl`
+---
 
-Mở terminal thứ hai và chạy:
+## 4. Kiểm tra server đã sẵn sàng chưa
+
+Mở terminal thứ hai:
+
+```bash
+curl http://127.0.0.1:54280/v2/health/ready
+```
+
+Nếu server sẵn sàng, bạn sẽ nhận phản hồi thành công.
+
+Kiểm tra model đã được load:
+
+```bash
+curl -s http://127.0.0.1:54280/v2/repository/index
+```
+
+Bạn nên thấy:
+
+* `dots_ocr`
+* `dots_ocr_engine`
+
+---
+
+## 5. Test OCR bằng `curl` với ảnh URL
+
+Chạy lệnh sau:
 
 ```bash
 curl -s -X POST http://127.0.0.1:54280/v2/models/dots_ocr/infer \
@@ -93,17 +142,19 @@ curl -s -X POST http://127.0.0.1:54280/v2/models/dots_ocr/infer \
   }'
 ```
 
-## 3. Ý nghĩa request test
+### Giải thích request
 
-Request trên gửi vào model `dots_ocr` với 3 input:
+Wrapper `dots_ocr` nhận 3 input:
 
-* `PROMPT`: chỉ dẫn OCR cho model
-* `IMAGE_B64`: để trống, vì ở đây không dùng ảnh base64
-* `IMAGE_URL`: URL ảnh để wrapper server tự tải ảnh và xử lý
+* `PROMPT`: chỉ dẫn cho model (Không cần thiết, có thể bỏ trống)
+* `IMAGE_B64`: để trống nếu không dùng base64
+* `IMAGE_URL`: URL ảnh để server tự tải ảnh và OCR
 
-## 4. Kết quả mong đợi
+---
 
-Server sẽ trả về JSON dạng:
+## 6. Kết quả trả về
+
+Server sẽ trả JSON dạng:
 
 ```json
 {
@@ -122,20 +173,62 @@ Server sẽ trả về JSON dạng:
 }
 ```
 
-Nội dung OCR nằm tại:
+## 7. Khắc phục lỗi Docker chưa được cấu hình cho NVIDIA runtime
+
+Nếu khi chạy Triton với `--gpus all` bạn gặp lỗi kiểu:
 
 ```text
-outputs[0].data[0]
+docker: Error response from daemon: could not select device driver "" with capabilities: [[gpu]]
 ```
 
-## 5. Kiểm tra nhanh server đã sẵn sàng chưa
+thì nguyên nhân thường là **Docker daemon chưa được cấu hình để dùng NVIDIA runtime**.
+Sau khi cài NVIDIA Container Toolkit, bạn cần chạy `nvidia-ctk runtime configure --runtime=docker`; lệnh này sửa `/etc/docker/daemon.json`, rồi bạn phải restart Docker. ([NVIDIA Docs][2])
 
-Nếu muốn kiểm tra trước khi test OCR:
+### Các bước sửa lỗi
 
 ```bash
-curl http://127.0.0.1:54280/v2/health/ready
+# 1) kiểm tra host đã thấy GPU chưa
+nvidia-smi
+
+# 2) cài NVIDIA Container Toolkit (nếu chưa cài)
+apt-get update && apt-get install -y --no-install-recommends \
+  ca-certificates curl gnupg2
+
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+  gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+  tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+apt-get update
+export NVIDIA_CONTAINER_TOOLKIT_VERSION=1.18.2-1
+apt-get install -y \
+  nvidia-container-toolkit=${NVIDIA_CONTAINER_TOOLKIT_VERSION} \
+  nvidia-container-toolkit-base=${NVIDIA_CONTAINER_TOOLKIT_VERSION} \
+  libnvidia-container-tools=${NVIDIA_CONTAINER_TOOLKIT_VERSION} \
+  libnvidia-container1=${NVIDIA_CONTAINER_TOOLKIT_VERSION}
+
+# 3) cấu hình Docker dùng NVIDIA runtime
+nvidia-ctk runtime configure --runtime=docker
+
+# 4) restart Docker
+systemctl restart docker
+# nếu máy không có systemd thì thử:
+# service docker restart
 ```
 
-Nếu server sẵn sàng, bạn sẽ nhận phản hồi thành công.
+### Kiểm tra Docker đã nhận NVIDIA runtime chưa
 
+Test nhanh GPU trong Docker
 
+```bash
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
+
+Nếu lệnh này chạy được và in ra thông tin GPU, nghĩa là `--gpus all` đã hoạt động bình thường.
+
+---
+
+[1]: https://docs.nvidia.com/deeplearning/triton-inference-server/user-guide/docs/introduction/compatibility.html?utm_source=chatgpt.com "Release Compatibility Matrix — NVIDIA Triton Inference ..."
+[2]: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html?utm_source=chatgpt.com "Installing the NVIDIA Container Toolkit"
