@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import urllib.request
 import urllib.error
@@ -20,7 +21,13 @@ class TritonPythonModel:
         params = model_config.get("parameters", {})
 
         self.engine_model_name = params.get("engine_model_name", {}).get("string_value", "dots_ocr_engine")
-        self.triton_http_url = params.get("triton_http_url", {}).get("string_value", "http://127.0.0.1:51160")
+
+        triton_http_port = os.environ.get("TRITON_HTTP_PORT")
+        if triton_http_port:
+            self.triton_http_url = f"http://127.0.0.1:{triton_http_port}"
+        else:
+            self.triton_http_url = params.get("triton_http_url", {}).get("string_value", "http://127.0.0.1:8000")
+
         self.generate_url = f"{self.triton_http_url}/v2/models/{self.engine_model_name}/generate"
 
     def _build_raw_prompt(self, prompt: str) -> str:

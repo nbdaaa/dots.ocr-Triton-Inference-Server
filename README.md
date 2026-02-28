@@ -62,15 +62,18 @@ Nếu kết quả **nhỏ hơn `580.95.05`**, không nên dùng image `25.11-vll
 Chạy lệnh sau trong terminal thứ nhất:
 
 ```bash
+HTTP_PORT=54280
+
 docker run --rm --gpus all \
   --network host \
   --ipc=host \
   -v /home/workspace/model_repository:/models \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
+  -e TRITON_HTTP_PORT=$HTTP_PORT \
   nvcr.io/nvidia/tritonserver:25.11-vllm-python-py3 \
   tritonserver \
     --model-repository=/models \
-    --http-port=54280 \
+    --http-port=$HTTP_PORT \
     --grpc-port=8001 \
     --metrics-port=8002
 ```
@@ -82,7 +85,8 @@ docker run --rm --gpus all \
 * `--ipc=host`: chia sẻ IPC
 * `-v /home/workspace/model_repository:/models`: mount model repository vào container
 * `-v ~/.cache/huggingface:/root/.cache/huggingface`: tái sử dụng cache model
-* `--http-port=54280`: Triton nhận HTTP request ở cổng `54280`
+* `HTTP_PORT=54280`: đặt biến shell một lần duy nhất — cả `--http-port` lẫn internal call của `dots_ocr` → `dots_ocr_engine` đều dùng cổng này
+* `-e TRITON_HTTP_PORT=$HTTP_PORT`: truyền cổng vào container để `dots_ocr` tự cấu hình URL nội bộ
 
 > Giữ terminal này mở trong suốt quá trình test.
 

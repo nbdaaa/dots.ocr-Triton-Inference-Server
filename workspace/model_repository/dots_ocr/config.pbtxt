@@ -42,5 +42,5 @@ parameters: {
 
 parameters: {
   key: "triton_http_url"
-  value: { string_value: "http://127.0.0.1:51160" }
+  value: { string_value: "http://127.0.0.1:8000" }
 }
