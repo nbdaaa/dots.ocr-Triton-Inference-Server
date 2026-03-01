@@ -1,5 +1,47 @@
 # README
 
+## Monitoring: Prometheus + Grafana
+
+Triton tự động expose metrics Prometheus tại cổng `8002`. Stack monitoring được khởi động cùng Triton bằng một lệnh duy nhất.
+
+### Yêu cầu
+
+* Docker Engine >= 20.10 và Docker Compose v2 (plugin `docker compose`)
+* NVIDIA Container Toolkit đã cài và cấu hình
+
+### Bước 1 — Tải dashboard JSON (chỉ làm một lần)
+
+```bash
+curl -fsSL "https://grafana.com/api/dashboards/22897/revisions/latest/download" \
+  -o monitoring/grafana/dashboards/triton-inference-server.json
+```
+
+### Bước 2 — Khởi động toàn bộ stack
+
+```bash
+docker compose up -d
+```
+
+Ba container sẽ khởi động: **triton**, **prometheus**, **grafana**.
+
+### Truy cập
+
+| Dịch vụ   | URL                        | Ghi chú              |
+|------------|----------------------------|----------------------|
+| Triton     | http://localhost:54280     | HTTP inference API   |
+| Prometheus | http://localhost:9090      | targets → triton UP  |
+| Grafana    | http://localhost:3000      | admin / admin        |
+
+Trong Grafana: vào **Dashboards → Triton Inference Server** để xem dashboard NVIDIA Triton.
+
+### Dừng stack
+
+```bash
+docker compose down
+```
+
+---
+
 ## Chạy và test Triton Inference Server cho `dots_ocr`
 
 Tài liệu này hướng dẫn cách:

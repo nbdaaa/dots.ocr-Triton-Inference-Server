@@ -1,0 +1,4 @@
+.env
+monitoring/grafana/dashboards/*.json
+__pycache__/
+*.pyc
