@@ -56,6 +56,10 @@ Ba container sẽ khởi động: **triton**, **prometheus**, **grafana**.
 | Prometheus | http://localhost:9090      | targets → triton UP  |
 | Grafana    | http://localhost:3000      | admin / admin        |
 
+```bash
+ssh -p PORT root@IP_PUBLIC -L 8080:localhost:8080 -L 3000:localhost:3000 -L 9090:localhost:9090 -L 54280:localhost:54280
+```
+
 Trong Grafana: vào **Dashboards → Triton Inference Server** để xem dashboard NVIDIA Triton.
 
 ### Dừng stack
