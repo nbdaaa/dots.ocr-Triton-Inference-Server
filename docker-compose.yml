@@ -10,17 +10,15 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
     volumes:
+      - ./docker-entrypoint.sh:/entrypoint.sh
       - ${MODEL_REPO_PATH}:/models
       - ${HF_CACHE_PATH}:/root/.cache/huggingface
     environment:
       - TRITON_HTTP_PORT=${TRITON_HTTP_PORT}
-    command: >
-      tritonserver
-        --model-repository=/models
-        --http-port=${TRITON_HTTP_PORT}
-        --grpc-port=${TRITON_GRPC_PORT}
-        --metrics-port=${TRITON_METRICS_PORT}
+      - TRITON_GRPC_PORT=${TRITON_GRPC_PORT}
+      - TRITON_METRICS_PORT=${TRITON_METRICS_PORT}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${TRITON_HTTP_PORT}/v2/health/ready"]
       interval: 30s
