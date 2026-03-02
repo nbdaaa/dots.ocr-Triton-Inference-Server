@@ -6,25 +6,26 @@ NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l
 
 if [ "$NUM_GPUS" -eq 0 ]; then
     echo "[entrypoint] No GPUs detected, falling back to 1 CPU instance"
-    NUM_GPUS=1
     KIND="KIND_CPU"
 else
-    echo "[entrypoint] Detected $NUM_GPUS GPU(s) → launching $NUM_GPUS instance(s)"
+    echo "[entrypoint] Detected $NUM_GPUS GPU(s) → launching 1 instance per GPU ($NUM_GPUS total)"
     KIND="KIND_GPU"
 fi
 
-# Overwrite dots_ocr_engine config.pbtxt with detected GPU count
+# Overwrite dots_ocr_engine config.pbtxt.
+# count: 1 + KIND_GPU → Triton creates exactly 1 instance per available GPU.
+# Do NOT set count to NUM_GPUS — that would create NUM_GPUS instances *per* GPU.
 cat > /models/dots_ocr_engine/config.pbtxt << EOF
 backend: "vllm"
 instance_group [
   {
-    count: ${NUM_GPUS}
+    count: 1
     kind: ${KIND}
   }
 ]
 EOF
 
-echo "[entrypoint] config.pbtxt updated: count=${NUM_GPUS}, kind=${KIND}"
+echo "[entrypoint] config.pbtxt updated: count=1, kind=${KIND} (auto-scaled across $NUM_GPUS GPU(s))"
 
 # Start Triton
 exec tritonserver \
