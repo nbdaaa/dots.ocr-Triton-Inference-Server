@@ -18,6 +18,30 @@ curl -fsSL "https://grafana.com/api/dashboards/22897/revisions/latest/download" 
 
 ### Bước 2 — Khởi động toàn bộ stack
 
+Trước khi chạy hệ thống, hãy tạo file `.env` ở thư mục gốc của project. Cấu trúc file `.env`:
+```env
+# Triton Inference Server
+TRITON_IMAGE_TAG=25.11-vllm-python-py3
+TRITON_HTTP_PORT= Port HTTP của Triton Server
+TRITON_GRPC_PORT=8001
+TRITON_METRICS_PORT=8002
+MODEL_REPO_PATH=./workspace/model_repository
+HF_CACHE_PATH=~/.cache/huggingface
+
+# Prometheus
+PROMETHEUS_IMAGE_TAG=latest
+PROMETHEUS_PORT=9090
+PROMETHEUS_RETENTION=15d
+
+# Grafana
+GRAFANA_IMAGE_TAG=latest
+GRAFANA_PORT=3000
+GRAFANA_ADMIN_USER=admin
+GRAFANA_ADMIN_PASSWORD=admin
+```
+
+Sau khi tạo file `.env`, chạy docker:s
+
 ```bash
 docker compose up -d
 ```
