@@ -41,6 +41,11 @@ parameters: {
 }
 
 parameters: {
+  key: "max_tokens"
+  value: { string_value: "20000" }
+}
+
+parameters: {
   key: "triton_http_url"
   value: { string_value: "http://127.0.0.1:8000" }
 }

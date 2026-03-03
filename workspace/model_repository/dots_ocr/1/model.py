@@ -31,18 +31,34 @@ class TritonPythonModel:
         self.generate_url = f"{self.triton_http_url}/v2/models/{self.engine_model_name}/generate"
 
     def _build_raw_prompt(self, prompt: str) -> str:
-        return f"<|img|><|imgpad|><|endofimg|>\n{prompt}"
-
-    def _clean_output(self, text: str, user_prompt: str) -> str:
-        text = re.sub(
-            r"^<\|img\|>(?:<\|imgpad\|>)+<\|endofimg\|>\s*",
-            "",
-            text,
-            flags=re.DOTALL,
+        return (
+            f"<|im_start|>user\n"
+            f"<|img|><|imgpad|><|endofimg|>\n"
+            f"{prompt}"
+            f"<|im_end|>\n"
+            f"<|im_start|>assistant\n"
         )
 
-        prompt_pat = r"^\s*" + re.escape(user_prompt) + r"\s*"
-        text = re.sub(prompt_pat, "", text, count=1, flags=re.DOTALL)
+    def _clean_output(self, text: str, user_prompt: str) -> str:
+        # text_output from vLLM includes the full sequence (input + generated).
+        # Extract only the assistant's generated portion.
+        marker = "<|im_start|>assistant\n"
+        idx = text.find(marker)
+        if idx != -1:
+            text = text[idx + len(marker):]
+        else:
+            # Fallback: strip image tokens then echoed prompt
+            text = re.sub(
+                r"^(?:<\|img\|>)?(?:<\|imgpad\|>)*<\|endofimg\|>\s*",
+                "",
+                text,
+                flags=re.DOTALL,
+            )
+            prompt_pat = r"^\s*" + re.escape(user_prompt) + r"\s*"
+            text = re.sub(prompt_pat, "", text, count=1, flags=re.DOTALL)
+
+        # Strip trailing end-of-turn token if present
+        text = re.sub(r"<\|im_end\|>.*$", "", text, flags=re.DOTALL)
 
         return text.strip()
 
@@ -89,7 +105,7 @@ class TritonPythonModel:
             "parameters": {
                 "stream": False,
                 "temperature": 0,
-                "max_tokens": 1024
+                "max_tokens": 20000
             }
         }
 
@@ -116,7 +132,11 @@ class TritonPythonModel:
         if "text_output" not in resp_json:
             raise RuntimeError(f"Unexpected engine response: {resp_json}")
 
-        return resp_json["text_output"]
+        raw = resp_json["text_output"]
+        print(f"[DEBUG raw_output] {repr(raw[:])}", flush=True)
+
+        #return resp_json["text_output"]
+        return raw
 
     def execute(self, requests):
         responses = []

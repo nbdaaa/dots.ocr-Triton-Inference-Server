@@ -4,7 +4,7 @@
   "tensor_parallel_size": 1,
   "gpu_memory_utilization": 0.9,
   "dtype": "bfloat16",
-  "max_model_len": 10000,
+  "max_model_len": 20000,
   "limit_mm_per_prompt": {
     "image": 1
   },
