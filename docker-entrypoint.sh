@@ -23,12 +23,6 @@ instance_group [
     kind: ${KIND}
   }
 ]
-
-model_queue_policy {
-  timeout_action: REJECT
-  default_timeout_microseconds: 300000000
-  max_queue_size: 100
-}
 EOF
 
 echo "[entrypoint] config.pbtxt updated: count=1, kind=${KIND} (auto-scaled across $NUM_GPUS GPU(s))"

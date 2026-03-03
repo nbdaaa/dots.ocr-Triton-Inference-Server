@@ -30,12 +30,6 @@ instance_group [
   }
 ]
 
-model_queue_policy {
-  timeout_action: REJECT
-  default_timeout_microseconds: 300000000
-  max_queue_size: 100
-}
-
 parameters: {
   key: "ocr_model_name"
   value: { string_value: "dots_ocr" }
