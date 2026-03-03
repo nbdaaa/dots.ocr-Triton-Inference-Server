@@ -1,6 +1,10 @@
 services:
   triton:
-    image: nvcr.io/nvidia/tritonserver:${TRITON_IMAGE_TAG}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TRITON_IMAGE_TAG: ${TRITON_IMAGE_TAG}
     network_mode: host
     ipc: host
     deploy:
