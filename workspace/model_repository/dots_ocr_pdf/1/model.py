@@ -43,11 +43,14 @@ class TritonPythonModel:
                 "Install it with: pip install pymupdf"
             )
 
-    def _pdf_path_to_page_images(self, pdf_path: str) -> list:
-        """Render each PDF page as a base64-encoded PNG string."""
+    def _pdf_to_page_images(self, pdf_source) -> list:
+        """Render each PDF page as a base64-encoded PNG string.
+        pdf_source: file path (str) or raw PDF bytes.
+        """
         mat = self._fitz.Matrix(self.dpi / 72, self.dpi / 72)
         page_images = []
-        with self._fitz.open(pdf_path) as doc:
+        open_kwargs = {"stream": pdf_source, "filetype": "pdf"} if isinstance(pdf_source, bytes) else {"filename": pdf_source}
+        with self._fitz.open(**open_kwargs) as doc:
             for page in doc:
                 pix = page.get_pixmap(matrix=mat)
                 png_bytes = pix.tobytes("png")
@@ -95,20 +98,26 @@ class TritonPythonModel:
         for request in requests:
             try:
                 pdf_path_tensor = pb_utils.get_input_tensor_by_name(request, "PDF_PATH")
-                prompt_tensor = pb_utils.get_input_tensor_by_name(request, "PROMPT")
+                pdf_b64_tensor  = pb_utils.get_input_tensor_by_name(request, "PDF_B64")
+                prompt_tensor   = pb_utils.get_input_tensor_by_name(request, "PROMPT")
 
-                if pdf_path_tensor is None:
-                    raise ValueError("Missing input tensor: PDF_PATH")
                 if prompt_tensor is None:
                     raise ValueError("Missing input tensor: PROMPT")
 
-                pdf_path = _to_str(pdf_path_tensor.as_numpy().reshape(-1)[0])
-                prompt = _to_str(prompt_tensor.as_numpy().reshape(-1)[0]).strip() or DEFAULT_PROMPT
+                prompt   = _to_str(prompt_tensor.as_numpy().reshape(-1)[0]).strip() or DEFAULT_PROMPT
+                pdf_path = _to_str(pdf_path_tensor.as_numpy().reshape(-1)[0]).strip() if pdf_path_tensor is not None else ""
+                pdf_b64  = _to_str(pdf_b64_tensor.as_numpy().reshape(-1)[0]).strip()  if pdf_b64_tensor  is not None else ""
 
-                if not os.path.isfile(pdf_path):
-                    raise ValueError(f"PDF file not found: {pdf_path}")
+                if pdf_b64:
+                    pdf_source = base64.b64decode(pdf_b64)
+                elif pdf_path:
+                    if not os.path.isfile(pdf_path):
+                        raise ValueError(f"PDF file not found: {pdf_path}")
+                    pdf_source = pdf_path
+                else:
+                    raise ValueError("Either PDF_B64 or PDF_PATH must be provided")
 
-                page_images = self._pdf_path_to_page_images(pdf_path)
+                page_images = self._pdf_to_page_images(pdf_source)
                 if not page_images:
                     raise ValueError(f"PDF has no renderable pages: {pdf_path}")
 

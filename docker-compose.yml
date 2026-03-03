@@ -19,6 +19,7 @@ services:
       - ./docker-entrypoint.sh:/entrypoint.sh
       - ${MODEL_REPO_PATH}:/models
       - ${HF_CACHE_PATH}:/root/.cache/huggingface
+      - ${PDF_INPUT_PATH}:/data/pdfs
     environment:
       - TRITON_HTTP_PORT=${TRITON_HTTP_PORT}
       - TRITON_GRPC_PORT=${TRITON_GRPC_PORT}
@@ -31,6 +32,18 @@ services:
       timeout: 10s
       retries: 5
       start_period: 120s
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    network_mode: host
+    environment:
+      - TRITON_URL=http://localhost:${TRITON_HTTP_PORT}
+    depends_on:
+      triton:
+        condition: service_healthy
+    restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_IMAGE_TAG}
