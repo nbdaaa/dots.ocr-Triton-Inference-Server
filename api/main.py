@@ -66,7 +66,7 @@ def ocr_page_sync(image_b64: str, prompt: str) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=1800) as resp:
             result = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Triton HTTPError {e.code}: {e.read().decode(errors='replace')}")
