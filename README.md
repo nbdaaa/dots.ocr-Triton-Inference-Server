@@ -1,5 +1,75 @@
 # README
 
+## Monitoring: Prometheus + Grafana
+
+Triton tự động expose metrics Prometheus tại cổng `8002`. Stack monitoring được khởi động cùng Triton bằng một lệnh duy nhất.
+
+### Yêu cầu
+
+* Docker Engine >= 20.10 và Docker Compose v2 (plugin `docker compose`)
+* NVIDIA Container Toolkit đã cài và cấu hình
+
+### Bước 1 — Tải dashboard JSON (chỉ làm một lần)
+
+```bash
+curl -fsSL "https://grafana.com/api/dashboards/22897/revisions/latest/download" \
+  -o monitoring/grafana/dashboards/triton-inference-server.json
+```
+
+### Bước 2 — Khởi động toàn bộ stack
+
+Trước khi chạy hệ thống, hãy tạo file `.env` ở thư mục gốc của project. Cấu trúc file `.env`:
+```env
+# Triton Inference Server
+TRITON_IMAGE_TAG=25.11-vllm-python-py3
+TRITON_HTTP_PORT= Port HTTP của Triton Server
+TRITON_GRPC_PORT=8001
+TRITON_METRICS_PORT=8002
+MODEL_REPO_PATH=./workspace/model_repository
+HF_CACHE_PATH=~/.cache/huggingface
+
+# Prometheus
+PROMETHEUS_IMAGE_TAG=latest
+PROMETHEUS_PORT=9090
+PROMETHEUS_RETENTION=15d
+
+# Grafana
+GRAFANA_IMAGE_TAG=latest
+GRAFANA_PORT=3000
+GRAFANA_ADMIN_USER=admin
+GRAFANA_ADMIN_PASSWORD=admin
+```
+
+Sau khi tạo file `.env`, chạy docker:s
+
+```bash
+docker compose up -d
+```
+
+Ba container sẽ khởi động: **triton**, **prometheus**, **grafana**.
+
+### Truy cập
+
+| Dịch vụ   | URL                        | Ghi chú              |
+|------------|----------------------------|----------------------|
+| Triton     | http://localhost:54280     | HTTP inference API   |
+| Prometheus | http://localhost:9090      | targets → triton UP  |
+| Grafana    | http://localhost:3000      | admin / admin        |
+
+```bash
+ssh -p PORT_SSH root@IP_PUBLIC -L 8080:localhost:8080 -L 3000:localhost:3000 -L 9090:localhost:9090 -L HTTP_PORT:localhost:HTTP_PORT
+```
+
+Trong Grafana: vào **Dashboards → Triton Inference Server** để xem dashboard NVIDIA Triton.
+
+### Dừng stack
+
+```bash
+docker compose down
+```
+
+---
+
 ## Chạy và test Triton Inference Server cho `dots_ocr`
 
 Tài liệu này hướng dẫn cách:
@@ -27,11 +97,11 @@ workspace/model_repository
 
 ```text
 workspace/model_repository/
-├── dots_ocr/
+├── pipeline/          # Python backend — nhận request, gọi dots_ocr
 │   ├── config.pbtxt
 │   └── 1/
 │       └── model.py
-└── dots_ocr_engine/
+└── dots_ocr/          # vLLM backend — chạy model rednote-hilab/dots.ocr
     ├── config.pbtxt
     └── 1/
         └── model.json
@@ -110,72 +180,175 @@ curl -s http://127.0.0.1:54280/v2/repository/index
 
 Bạn nên thấy:
 
+* `pipeline`
 * `dots_ocr`
-* `dots_ocr_engine`
 
 ---
 
-## 5. Test OCR bằng `curl` với ảnh URL
-
-Chạy lệnh sau:
+## 5. Test Triton pipeline trực tiếp bằng `curl`
 
 ```bash
-curl -s -X POST http://127.0.0.1:54280/v2/models/dots_ocr/infer \
+IMAGE_B64=$(base64 -w 0 /path/to/image.png)
+
+curl -s -X POST http://127.0.0.1:54280/v2/models/pipeline/infer \
   -H "Content-Type: application/json" \
-  -d '{
-    "inputs": [
+  -d "{
+    \"inputs\": [
       {
-        "name": "PROMPT",
-        "shape": [1],
-        "datatype": "BYTES",
-        "data": ["OCR this image and return markdown."]
+        \"name\": \"PROMPT\",
+        \"shape\": [1],
+        \"datatype\": \"BYTES\",
+        \"data\": [\"OCR this image and return markdown.\"]
       },
       {
-        "name": "IMAGE_B64",
-        "shape": [1],
-        "datatype": "BYTES",
-        "data": [""]
-      },
-      {
-        "name": "IMAGE_URL",
-        "shape": [1],
-        "datatype": "BYTES",
-        "data": ["https://cdn.thuvienphapluat.vn//uploads/tintuc/2022/07/19/du-thao.png"]
+        \"name\": \"IMAGE_B64\",
+        \"shape\": [1],
+        \"datatype\": \"BYTES\",
+        \"data\": [\"${IMAGE_B64}\"]
       }
     ]
-  }'
+  }"
 ```
 
 ### Giải thích request
 
-Wrapper `dots_ocr` nhận 3 input:
+Model `pipeline` nhận 2 input:
 
-* `PROMPT`: chỉ dẫn cho model (Không cần thiết, có thể bỏ trống)
-* `IMAGE_B64`: để trống nếu không dùng base64
-* `IMAGE_URL`: URL ảnh để server tự tải ảnh và OCR
+* `PROMPT`: chỉ dẫn cho model (có thể bỏ trống)
+* `IMAGE_B64`: ảnh đã encode base64
 
 ---
 
-## 6. Kết quả trả về
+## 6. Kết quả trả về từ Triton
 
 Server sẽ trả JSON dạng:
 
 ```json
 {
-  "model_name": "dots_ocr",
+  "model_name": "pipeline",
   "model_version": "1",
   "outputs": [
     {
       "name": "TEXT",
       "datatype": "BYTES",
       "shape": [1],
-      "data": [
-        "..."
-      ]
+      "data": ["..."]
     }
   ]
 }
 ```
+
+---
+
+## 7. API Endpoints (FastAPI)
+
+API chạy tại cổng `API_PORT` (mặc định `54188`), đóng vai trò trung gian giữa client và Triton `pipeline`.
+
+### POST `/infer-image`
+
+Upload một ảnh và nhận kết quả OCR.
+
+**Request** — `multipart/form-data`:
+
+| Field    | Type   | Bắt buộc | Mô tả                        |
+|----------|--------|-----------|------------------------------|
+| `file`   | file   | Có        | File ảnh (PNG, JPG, ...)     |
+| `prompt` | string | Không     | Chỉ dẫn cho model            |
+
+```bash
+curl -s -X POST http://localhost:54188/infer-image \
+  -F "file=@/path/to/image.png" \
+  -F "prompt=OCR this image and return markdown."
+```
+
+**Response**:
+
+```json
+{ "text": "..." }
+```
+
+---
+
+### POST `/infer-pdf`
+
+Upload một file PDF, render từng trang thành ảnh, OCR song song tất cả các trang.
+
+**Request** — `multipart/form-data`:
+
+| Field    | Type   | Bắt buộc | Mô tả             |
+|----------|--------|-----------|-------------------|
+| `file`   | file   | Có        | File PDF          |
+| `prompt` | string | Không     | Chỉ dẫn cho model |
+
+```bash
+curl -s -X POST http://localhost:54188/infer-pdf \
+  -F "file=@/path/to/document.pdf" \
+  -F "prompt=OCR this document and return markdown."
+```
+
+**Response**:
+
+```json
+{
+  "job_id": "uuid",
+  "text": "[Page 1]\n...\n\n[Page 2]\n..."
+}
+```
+
+---
+
+### GET `/pdf-status`
+
+Liệt kê trạng thái tất cả các job.
+
+```bash
+curl -s http://localhost:54188/pdf-status
+```
+
+**Response**:
+
+```json
+[
+  {
+    "job_id": "uuid",
+    "status": "processing | completed | failed",
+    "filename": "document.pdf",
+    "ocr_total_pages": 5,
+    "ocr_processed_pages": 3,
+    "ocr_success_pages": 2,
+    "ocr_fail_pages": 1,
+    "ocr_remaining_pages": 2
+  }
+]
+```
+
+---
+
+### GET `/pdf-status/{job_id}`
+
+Lấy trạng thái và kết quả của một job cụ thể.
+
+```bash
+curl -s http://localhost:54188/pdf-status/<job_id>
+```
+
+**Response** (khi `completed`):
+
+```json
+{
+  "job_id": "uuid",
+  "status": "completed",
+  "filename": "document.pdf",
+  "ocr_total_pages": 5,
+  "ocr_processed_pages": 5,
+  "ocr_success_pages": 5,
+  "ocr_fail_pages": 0,
+  "ocr_remaining_pages": 0,
+  "text": "[Page 1]\n...\n\n[Page 2]\n..."
+}
+```
+
+Trả `404` nếu `job_id` không tồn tại.
 
 ## 7. Khắc phục lỗi Docker chưa được cấu hình cho NVIDIA runtime
 

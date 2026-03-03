@@ -3,7 +3,6 @@ import os
 import re
 import urllib.request
 import urllib.error
-import base64
 
 import numpy as np
 import triton_python_backend_utils as pb_utils
@@ -20,7 +19,7 @@ class TritonPythonModel:
         model_config = json.loads(args["model_config"])
         params = model_config.get("parameters", {})
 
-        self.engine_model_name = params.get("engine_model_name", {}).get("string_value", "dots_ocr_engine")
+        self.engine_model_name = params.get("engine_model_name", {}).get("string_value", "dots_ocr")
 
         triton_http_port = os.environ.get("TRITON_HTTP_PORT")
         if triton_http_port:
@@ -29,58 +28,39 @@ class TritonPythonModel:
             self.triton_http_url = params.get("triton_http_url", {}).get("string_value", "http://127.0.0.1:8000")
 
         self.generate_url = f"{self.triton_http_url}/v2/models/{self.engine_model_name}/generate"
+        self.max_tokens = int(params.get("max_tokens", {}).get("string_value", "4096"))
 
     def _build_raw_prompt(self, prompt: str) -> str:
-        return f"<|img|><|imgpad|><|endofimg|>\n{prompt}"
+        return (
+            f"<|im_start|>user\n"
+            f"<|img|><|imgpad|><|endofimg|>\n"
+            f"{prompt}"
+            f"<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
 
     def _clean_output(self, text: str, user_prompt: str) -> str:
-        text = re.sub(
-            r"^<\|img\|>(?:<\|imgpad\|>)+<\|endofimg\|>\s*",
-            "",
-            text,
-            flags=re.DOTALL,
-        )
+        # text_output from vLLM includes the full sequence (input + generated).
+        # Extract only the assistant's generated portion.
+        marker = "<|im_start|>assistant\n"
+        idx = text.find(marker)
+        if idx != -1:
+            text = text[idx + len(marker):]
+        else:
+            # Fallback: strip image tokens then echoed prompt
+            text = re.sub(
+                r"^(?:<\|img\|>)?(?:<\|imgpad\|>)*<\|endofimg\|>\s*",
+                "",
+                text,
+                flags=re.DOTALL,
+            )
+            prompt_pat = r"^\s*" + re.escape(user_prompt) + r"\s*"
+            text = re.sub(prompt_pat, "", text, count=1, flags=re.DOTALL)
 
-        prompt_pat = r"^\s*" + re.escape(user_prompt) + r"\s*"
-        text = re.sub(prompt_pat, "", text, count=1, flags=re.DOTALL)
+        # Strip trailing end-of-turn token if present
+        text = re.sub(r"<\|im_end\|>.*$", "", text, flags=re.DOTALL)
 
         return text.strip()
-
-    def _fetch_image_as_b64(self, image_url: str) -> str:
-        if not image_url.startswith(("http://", "https://")):
-            raise ValueError("IMAGE_URL must start with http:// or https://")
-
-        req = urllib.request.Request(
-            image_url,
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
-
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                img_bytes = resp.read()
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Failed to fetch IMAGE_URL (HTTP {e.code}): {detail}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"Failed to fetch IMAGE_URL: {e}") from e
-
-        if not img_bytes:
-            raise ValueError("IMAGE_URL returned empty content")
-
-        return base64.b64encode(img_bytes).decode("utf-8")
-
-    def _resolve_image_b64(self, image_b64: str, image_url: str) -> str:
-        image_b64 = (image_b64 or "").strip()
-        image_url = (image_url or "").strip()
-
-        # ưu tiên IMAGE_URL nếu có
-        if image_url:
-            return self._fetch_image_as_b64(image_url)
-
-        if image_b64:
-            return image_b64
-
-        raise ValueError("Either IMAGE_URL or IMAGE_B64 must be provided")
 
     def _call_engine(self, prompt: str, image_b64: str) -> str:
         payload = {
@@ -89,7 +69,7 @@ class TritonPythonModel:
             "parameters": {
                 "stream": False,
                 "temperature": 0,
-                "max_tokens": 1024
+                "max_tokens": self.max_tokens
             }
         }
 
@@ -116,7 +96,9 @@ class TritonPythonModel:
         if "text_output" not in resp_json:
             raise RuntimeError(f"Unexpected engine response: {resp_json}")
 
-        return resp_json["text_output"]
+        raw = resp_json["text_output"]
+        print(f"[DEBUG raw_output] {repr(raw[:500])}", flush=True)
+        return raw
 
     def execute(self, requests):
         responses = []
@@ -125,21 +107,19 @@ class TritonPythonModel:
             try:
                 prompt_tensor = pb_utils.get_input_tensor_by_name(request, "PROMPT")
                 image_b64_tensor = pb_utils.get_input_tensor_by_name(request, "IMAGE_B64")
-                image_url_tensor = pb_utils.get_input_tensor_by_name(request, "IMAGE_URL")
 
                 if prompt_tensor is None:
                     raise ValueError("Missing input tensor: PROMPT")
                 if image_b64_tensor is None:
                     raise ValueError("Missing input tensor: IMAGE_B64")
-                if image_url_tensor is None:
-                    raise ValueError("Missing input tensor: IMAGE_URL")
 
                 prompt = _to_str(prompt_tensor.as_numpy().reshape(-1)[0])
-                image_b64_in = _to_str(image_b64_tensor.as_numpy().reshape(-1)[0])
-                image_url = _to_str(image_url_tensor.as_numpy().reshape(-1)[0])
+                image_b64 = _to_str(image_b64_tensor.as_numpy().reshape(-1)[0])
 
-                resolved_b64 = self._resolve_image_b64(image_b64_in, image_url)
-                raw_text = self._call_engine(prompt, resolved_b64)
+                if not image_b64.strip():
+                    raise ValueError("IMAGE_B64 must be provided")
+
+                raw_text = self._call_engine(prompt, image_b64)
                 clean_text = self._clean_output(raw_text, prompt)
 
                 out_tensor = pb_utils.Tensor(

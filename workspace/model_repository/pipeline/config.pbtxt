@@ -1,0 +1,46 @@
+name: "pipeline"
+backend: "python"
+max_batch_size: 0
+
+input [
+  {
+    name: "PROMPT"
+    data_type: TYPE_STRING
+    dims: [1]
+  },
+  {
+    name: "IMAGE_B64"
+    data_type: TYPE_STRING
+    dims: [1]
+  }
+]
+
+output [
+  {
+    name: "TEXT"
+    data_type: TYPE_STRING
+    dims: [1]
+  }
+]
+
+instance_group [
+  {
+    kind: KIND_CPU
+    count: 1
+  }
+]
+
+parameters: {
+  key: "engine_model_name"
+  value: { string_value: "dots_ocr" }
+}
+
+parameters: {
+  key: "max_tokens"
+  value: { string_value: "24000" }
+}
+
+parameters: {
+  key: "triton_http_url"
+  value: { string_value: "http://127.0.0.1:8000" }
+}
