@@ -12,7 +12,7 @@ else
     KIND="KIND_GPU"
 fi
 
-# Overwrite dots_ocr config.pbtxt.
+# Overwrite dots_ocr config.pbtxt (vLLM engine model).
 # count: 1 + KIND_GPU → Triton creates exactly 1 instance per available GPU.
 # Do NOT set count to NUM_GPUS — that would create NUM_GPUS instances *per* GPU.
 cat > /models/dots_ocr/config.pbtxt << EOF
