@@ -1,0 +1,52 @@
+name: "dots_ocr_pdf"
+backend: "python"
+max_batch_size: 0
+
+input [
+  {
+    name: "PDF_PATH"
+    data_type: TYPE_STRING
+    dims: [1]
+  },
+  {
+    name: "PROMPT"
+    data_type: TYPE_STRING
+    dims: [1]
+  }
+]
+
+output [
+  {
+    name: "TEXT"
+    data_type: TYPE_STRING
+    dims: [1]
+  }
+]
+
+instance_group [
+  {
+    kind: KIND_CPU
+    count: 1
+  }
+]
+
+model_queue_policy {
+  timeout_action: REJECT
+  default_timeout_microseconds: 300000000
+  max_queue_size: 100
+}
+
+parameters: {
+  key: "ocr_model_name"
+  value: { string_value: "dots_ocr" }
+}
+
+parameters: {
+  key: "triton_http_url"
+  value: { string_value: "http://127.0.0.1:8000" }
+}
+
+parameters: {
+  key: "dpi"
+  value: { string_value: "200" }
+}

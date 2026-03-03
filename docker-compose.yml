@@ -19,6 +19,8 @@ services:
       - TRITON_HTTP_PORT=${TRITON_HTTP_PORT}
       - TRITON_GRPC_PORT=${TRITON_GRPC_PORT}
       - TRITON_METRICS_PORT=${TRITON_METRICS_PORT}
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - VLLM_USE_V1=0
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${TRITON_HTTP_PORT}/v2/health/ready"]
       interval: 30s
