@@ -14,7 +14,7 @@ else
     for i in $(seq 0 $((NUM_GPUS - 1))); do
         INSTANCE_GROUPS+="  {\n    count: 1\n    kind: KIND_GPU\n    gpus: [ $i ]\n  }"
         if [ $i -lt $((NUM_GPUS - 1)) ]; then
-            INSTANCE_GROUPS+="\n"
+            INSTANCE_GROUPS+=",\n"
         fi
     done
 fi
