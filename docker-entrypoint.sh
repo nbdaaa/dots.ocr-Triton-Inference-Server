@@ -22,8 +22,36 @@ fi
 printf "backend: \"vllm\"\ninstance_group [\n%b\n]\n" "$INSTANCE_GROUPS" \
     > /models/dots_ocr/config.pbtxt
 
-echo "[entrypoint] config.pbtxt updated: $NUM_GPUS instance(s), one per GPU"
+echo "[entrypoint] dots_ocr config.pbtxt updated: $NUM_GPUS instance(s), one per GPU"
 cat /models/dots_ocr/config.pbtxt
+
+# Scale pipeline CPU instances to match GPU count so pages are forwarded in parallel.
+# pipeline is just HTTP forwarding (CPU-bound), safe to run one instance per GPU.
+PIPELINE_COUNT=$(( NUM_GPUS > 0 ? NUM_GPUS : 1 ))
+cat > /models/pipeline/config.pbtxt << EOF
+name: "pipeline"
+backend: "python"
+max_batch_size: 0
+
+input [
+  { name: "PROMPT"    data_type: TYPE_STRING dims: [1] },
+  { name: "IMAGE_B64" data_type: TYPE_STRING dims: [1] }
+]
+
+output [
+  { name: "TEXT" data_type: TYPE_STRING dims: [1] }
+]
+
+instance_group [
+  { kind: KIND_CPU count: ${PIPELINE_COUNT} }
+]
+
+parameters: { key: "engine_model_name" value: { string_value: "dots_ocr" } }
+parameters: { key: "max_tokens"        value: { string_value: "24000" } }
+parameters: { key: "triton_http_url"   value: { string_value: "http://127.0.0.1:8000" } }
+EOF
+
+echo "[entrypoint] pipeline config.pbtxt updated: ${PIPELINE_COUNT} CPU instance(s)"
 
 # Start Triton
 exec tritonserver \
