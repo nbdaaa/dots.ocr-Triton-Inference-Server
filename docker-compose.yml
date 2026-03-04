@@ -19,7 +19,11 @@ services:
       - ./docker-entrypoint.sh:/entrypoint.sh
       - ${MODEL_REPO_PATH}:/models
       - ${HF_CACHE_PATH}:/root/.cache/huggingface
-      - ${PDF_INPUT_PATH}:/data/pdfs
+      - type: bind
+        source: ${PDF_INPUT_PATH}
+        target: /data/pdfs
+        bind:
+          create_host_path: true
     environment:
       - TRITON_HTTP_PORT=${TRITON_HTTP_PORT}
       - TRITON_GRPC_PORT=${TRITON_GRPC_PORT}
