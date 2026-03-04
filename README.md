@@ -200,7 +200,7 @@ curl -s -X POST http://127.0.0.1:54280/v2/models/pipeline/infer \
         \"name\": \"PROMPT\",
         \"shape\": [1],
         \"datatype\": \"BYTES\",
-        \"data\": [\"OCR this image and return markdown.\"]
+        \"data\": [\"\"]
       },
       {
         \"name\": \"IMAGE_B64\",
@@ -260,7 +260,7 @@ Upload một ảnh và nhận kết quả OCR.
 ```bash
 curl -s -X POST http://localhost:54188/infer-image \
   -F "file=@/path/to/image.png" \
-  -F "prompt=OCR this image and return markdown."
+  -F "prompt="
 ```
 
 **Response**:
@@ -285,7 +285,7 @@ Upload một file PDF, render từng trang thành ảnh, OCR song song tất c�
 ```bash
 curl -s -X POST http://localhost:54188/infer-pdf \
   -F "file=@/path/to/document.pdf" \
-  -F "prompt=OCR this document and return markdown."
+  -F "prompt="
 ```
 
 **Response**:
