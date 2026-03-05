@@ -11,7 +11,7 @@ from typing import Dict, Any
 
 import fitz
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse, StreamingResponse
 
 app = FastAPI()
 
@@ -105,7 +105,7 @@ async def infer_image(
     return JSONResponse({"text": text})
 
 
-# ─── POST /infer-pdf  (async — returns when all pages done or cancelled) ──────
+# ─── POST /infer-pdf  (async — streams job_id then result, supports cancel) ──
 
 @app.post("/infer-pdf")
 async def infer_pdf(
@@ -180,13 +180,15 @@ async def infer_pdf(
     tasks = [asyncio.create_task(ocr_one(i, img)) for i, img in enumerate(pages)]
     job["page_tasks"] = tasks
 
-    await asyncio.gather(*tasks, return_exceptions=True)
+    async def stream():
+        yield json.dumps({"job_id": job_id, "status": "processing"}) + "\n"
+        await asyncio.gather(*tasks, return_exceptions=True)
+        job["result"] = "\n\n".join(r for r in page_results if r is not None)
+        if job["status"] != "cancelled":
+            job["status"] = "completed"
+        yield json.dumps({"job_id": job_id, "text": job["result"]}) + "\n"
 
-    job["result"] = "\n\n".join(r for r in page_results if r is not None)
-    if job["status"] != "cancelled":
-        job["status"] = "completed"
-
-    return JSONResponse({"job_id": job_id, "text": job["result"]})
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
 # ─── DELETE /infer-pdf/{job_id} ───────────────────────────────────────────────
