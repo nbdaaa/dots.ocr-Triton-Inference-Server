@@ -62,7 +62,7 @@ class TritonPythonModel:
 
         return text.strip()
 
-    def _call_engine(self, prompt: str, image_b64: str) -> str:
+    def _call_engine(self, prompt: str, image_b64: str, request_id: str = "") -> str:
         payload = {
             "text_input": self._build_raw_prompt(prompt),
             "image": [image_b64],
@@ -72,6 +72,8 @@ class TritonPythonModel:
                 "max_tokens": self.max_tokens
             }
         }
+        if request_id:
+            payload["request_id"] = request_id
 
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -119,7 +121,10 @@ class TritonPythonModel:
                 if not image_b64.strip():
                     raise ValueError("IMAGE_B64 must be provided")
 
-                raw_text = self._call_engine(prompt, image_b64)
+                request_id_tensor = pb_utils.get_input_tensor_by_name(request, "REQUEST_ID")
+                request_id = _to_str(request_id_tensor.as_numpy().reshape(-1)[0]) if request_id_tensor is not None else ""
+
+                raw_text = self._call_engine(prompt, image_b64, request_id)
                 clean_text = self._clean_output(raw_text, prompt)
 
                 out_tensor = pb_utils.Tensor(

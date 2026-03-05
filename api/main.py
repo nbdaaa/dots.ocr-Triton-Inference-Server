@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import os
+import threading
 import urllib.request
 import urllib.error
 import uuid
@@ -52,11 +53,15 @@ def render_pdf_pages(pdf_bytes: bytes) -> list:
     return pages
 
 
-def ocr_page_sync(image_b64: str, prompt: str) -> str:
+def ocr_page_sync(image_b64: str, prompt: str, cancel_event: threading.Event, request_id: str) -> str:
+    if cancel_event.is_set():
+        raise RuntimeError("Cancelled")
+
     payload = {
         "inputs": [
-            {"name": "PROMPT",    "shape": [1], "datatype": "BYTES", "data": [prompt]},
-            {"name": "IMAGE_B64", "shape": [1], "datatype": "BYTES", "data": [image_b64]},
+            {"name": "PROMPT",      "shape": [1], "datatype": "BYTES", "data": [prompt]},
+            {"name": "IMAGE_B64",   "shape": [1], "datatype": "BYTES", "data": [image_b64]},
+            {"name": "REQUEST_ID",  "shape": [1], "datatype": "BYTES", "data": [request_id]},
         ]
     }
     req = urllib.request.Request(
@@ -91,14 +96,16 @@ async def infer_image(
 
     loop = asyncio.get_event_loop()
     try:
-        text = await loop.run_in_executor(thread_pool, ocr_page_sync, image_b64, prompt)
+        text = await loop.run_in_executor(
+            thread_pool, ocr_page_sync, image_b64, prompt, threading.Event(), str(uuid.uuid4())
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     return JSONResponse({"text": text})
 
 
-# ─── POST /infer-pdf  (synchronous — blocks until done) ──────────────────────
+# ─── POST /infer-pdf  (async — returns when all pages done or cancelled) ──────
 
 @app.post("/infer-pdf")
 async def infer_pdf(
@@ -111,6 +118,7 @@ async def infer_pdf(
     pdf_bytes = await file.read()
     job_id = str(uuid.uuid4())
     loop = asyncio.get_event_loop()
+    cancel_event = threading.Event()
 
     # Render pages
     try:
@@ -125,21 +133,13 @@ async def infer_pdf(
             "ocr_fail_pages": 0,
             "ocr_remaining_pages": 0,
             "error": str(e),
+            "cancel_event": cancel_event,
+            "page_tasks": [],
         }
         raise HTTPException(status_code=500, detail=f"Failed to render PDF: {e}")
 
     total = len(pages)
     if total == 0:
-        jobs[job_id] = {
-            "status": "failed",
-            "filename": file.filename,
-            "ocr_total_pages": 0,
-            "ocr_processed_pages": 0,
-            "ocr_success_pages": 0,
-            "ocr_fail_pages": 0,
-            "ocr_remaining_pages": 0,
-            "error": "PDF has no renderable pages",
-        }
         raise HTTPException(status_code=422, detail="PDF has no renderable pages")
 
     jobs[job_id] = {
@@ -152,15 +152,24 @@ async def infer_pdf(
         "ocr_remaining_pages": total,
         "result": None,
         "error": None,
+        "cancel_event": cancel_event,
+        "page_tasks": [],
     }
     job = jobs[job_id]
     page_results = [None] * total
 
     async def ocr_one(i: int, image_b64: str):
+        request_id = str(uuid.uuid4())
         try:
-            text = await loop.run_in_executor(thread_pool, ocr_page_sync, image_b64, prompt)
+            text = await loop.run_in_executor(
+                thread_pool, ocr_page_sync, image_b64, prompt, cancel_event, request_id
+            )
             page_results[i] = f"[Page {i + 1}]\n{text}"
             job["ocr_success_pages"] += 1
+        except asyncio.CancelledError:
+            page_results[i] = f"[Page {i + 1}]\n[CANCELLED]"
+            job["ocr_fail_pages"] += 1
+            raise
         except Exception as e:
             page_results[i] = f"[Page {i + 1}]\n[ERROR: {e}]"
             job["ocr_fail_pages"] += 1
@@ -168,12 +177,37 @@ async def infer_pdf(
             job["ocr_processed_pages"] += 1
             job["ocr_remaining_pages"] -= 1
 
-    await asyncio.gather(*[ocr_one(i, img) for i, img in enumerate(pages)])
+    tasks = [asyncio.create_task(ocr_one(i, img)) for i, img in enumerate(pages)]
+    job["page_tasks"] = tasks
 
-    job["result"] = "\n\n".join(page_results)
-    job["status"] = "completed"
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    job["result"] = "\n\n".join(r for r in page_results if r is not None)
+    if job["status"] != "cancelled":
+        job["status"] = "completed"
 
     return JSONResponse({"job_id": job_id, "text": job["result"]})
+
+
+# ─── DELETE /infer-pdf/{job_id} ───────────────────────────────────────────────
+
+@app.delete("/infer-pdf/{job_id}")
+async def cancel_infer_pdf(job_id: str):
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["status"] != "processing":
+        raise HTTPException(status_code=400, detail=f"Job is not processing (status: {job['status']})")
+
+    # Signal all threads to stop before making new Triton calls
+    job["cancel_event"].set()
+    job["status"] = "cancelled"
+
+    # Cancel asyncio tasks (stops pending pages not yet in the thread pool)
+    for task in job.get("page_tasks", []):
+        task.cancel()
+
+    return JSONResponse({"job_id": job_id, "status": "cancelled"})
 
 
 # ─── Status endpoints ─────────────────────────────────────────────────────────
@@ -189,7 +223,7 @@ def _job_summary(job_id: str, job: dict, include_text: bool = False) -> dict:
         "ocr_fail_pages": job.get("ocr_fail_pages", 0),
         "ocr_remaining_pages": job.get("ocr_remaining_pages", 0),
     }
-    if include_text and job["status"] == "completed":
+    if include_text and job["status"] in ("completed", "cancelled"):
         summary["text"] = job["result"]
     if job["status"] == "failed":
         summary["error"] = job["error"]
