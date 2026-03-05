@@ -10,7 +10,7 @@ from typing import Dict, Any
 
 import fitz
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse, StreamingResponse
 
 app = FastAPI()
 
@@ -98,7 +98,7 @@ async def infer_image(
     return JSONResponse({"text": text})
 
 
-# ─── POST /infer-pdf  (synchronous — blocks until done) ──────────────────────
+# ─── POST /infer-pdf  (streams {job_id, status} then {job_id, text}) ─────────
 
 @app.post("/infer-pdf")
 async def infer_pdf(
@@ -168,12 +168,14 @@ async def infer_pdf(
             job["ocr_processed_pages"] += 1
             job["ocr_remaining_pages"] -= 1
 
-    await asyncio.gather(*[ocr_one(i, img) for i, img in enumerate(pages)])
+    async def stream():
+        yield json.dumps({"job_id": job_id, "status": "processing"}) + "\n"
+        await asyncio.gather(*[ocr_one(i, img) for i, img in enumerate(pages)])
+        job["result"] = "\n\n".join(page_results)
+        job["status"] = "completed"
+        yield json.dumps({"job_id": job_id, "text": job["result"]}) + "\n"
 
-    job["result"] = "\n\n".join(page_results)
-    job["status"] = "completed"
-
-    return JSONResponse({"job_id": job_id, "text": job["result"]})
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
 # ─── Status endpoints ─────────────────────────────────────────────────────────
