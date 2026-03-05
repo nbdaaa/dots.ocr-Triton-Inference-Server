@@ -11,7 +11,14 @@ from typing import Dict, Any
 
 import fitz
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
+
+def JSONResponse(content, **kwargs):
+    return Response(
+        content=json.dumps(content, ensure_ascii=False),
+        media_type="application/json",
+        **kwargs,
+    )
 
 app = FastAPI()
 
@@ -181,12 +188,12 @@ async def infer_pdf(
     job["page_tasks"] = tasks
 
     async def stream():
-        yield json.dumps({"job_id": job_id, "status": "processing"}) + "\n"
+        yield json.dumps({"job_id": job_id, "status": "processing"}, ensure_ascii=False) + "\n"
         await asyncio.gather(*tasks, return_exceptions=True)
         job["result"] = "\n\n".join(r for r in page_results if r is not None)
         if job["status"] != "cancelled":
             job["status"] = "completed"
-        yield json.dumps({"job_id": job_id, "text": job["result"]}) + "\n"
+        yield json.dumps({"job_id": job_id, "text": job["result"]}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
