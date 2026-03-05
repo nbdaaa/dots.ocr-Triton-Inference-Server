@@ -72,8 +72,6 @@ class TritonPythonModel:
                 "max_tokens": self.max_tokens
             }
         }
-        if request_id:
-            payload["request_id"] = request_id
 
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
