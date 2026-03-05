@@ -98,6 +98,8 @@ async def infer_image(
     file: UploadFile = File(...),
     prompt: str = Form(default=DEFAULT_PROMPT),
 ):
+    if not prompt:
+        prompt = DEFAULT_PROMPT
     image_bytes = await file.read()
     image_b64 = base64.b64encode(image_bytes).decode()
 
@@ -119,6 +121,8 @@ async def infer_pdf(
     file: UploadFile = File(...),
     prompt: str = Form(default=DEFAULT_PROMPT),
 ):
+    if not prompt:
+        prompt = DEFAULT_PROMPT
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
