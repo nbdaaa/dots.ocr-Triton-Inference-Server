@@ -153,6 +153,9 @@ async def infer_pdf(
     if total == 0:
         raise HTTPException(status_code=422, detail="PDF has no renderable pages")
 
+    filename_stem = os.path.splitext(file.filename)[0]
+    result_queue: asyncio.Queue = asyncio.Queue()
+
     jobs[job_id] = {
         "status": "processing",
         "filename": file.filename,
@@ -167,37 +170,47 @@ async def infer_pdf(
         "page_tasks": [],
     }
     job = jobs[job_id]
-    page_results = [None] * total
+    page_results: list = [None] * total
 
     async def ocr_one(i: int, image_b64: str):
         request_id = str(uuid.uuid4())
+        page_result = None
         try:
             text = await loop.run_in_executor(
                 thread_pool, ocr_page_sync, image_b64, prompt, cancel_event, request_id
             )
-            page_results[i] = f"[Page {i + 1}]\n{text}"
+            page_result = {
+                "file_path": file.filename,
+                "filename": filename_stem,
+                "page_idx": i,
+                "image_path": f"{filename_stem}_page_{i:04d}.png",
+                "response": text,
+            }
+            page_results[i] = page_result
             job["ocr_success_pages"] += 1
         except asyncio.CancelledError:
-            page_results[i] = f"[Page {i + 1}]\n[CANCELLED]"
             job["ocr_fail_pages"] += 1
             raise
         except Exception as e:
-            page_results[i] = f"[Page {i + 1}]\n[ERROR: {e}]"
             job["ocr_fail_pages"] += 1
         finally:
             job["ocr_processed_pages"] += 1
             job["ocr_remaining_pages"] -= 1
+            result_queue.put_nowait(page_result)
 
     tasks = [asyncio.create_task(ocr_one(i, img)) for i, img in enumerate(pages)]
     job["page_tasks"] = tasks
 
     async def stream():
         yield json.dumps({"job_id": job_id, "status": "processing"}, ensure_ascii=False) + "\n"
-        await asyncio.gather(*tasks, return_exceptions=True)
-        job["result"] = "\n\n".join(r for r in page_results if r is not None)
+        for _ in range(total):
+            page_result = await result_queue.get()
+            if page_result is not None:
+                yield json.dumps(page_result, ensure_ascii=False) + "\n"
+        job["result"] = [r for r in page_results if r is not None]
         if job["status"] != "cancelled":
             job["status"] = "completed"
-        yield json.dumps({"job_id": job_id, "text": job["result"]}, ensure_ascii=False) + "\n"
+        yield json.dumps({"job_id": job_id, "status": job["status"]}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
@@ -237,7 +250,7 @@ def _job_summary(job_id: str, job: dict, include_text: bool = False) -> dict:
         "ocr_remaining_pages": job.get("ocr_remaining_pages", 0),
     }
     if include_text and job["status"] in ("completed", "cancelled"):
-        summary["text"] = job["result"]
+        summary["result"] = job["result"]
     if job["status"] == "failed":
         summary["error"] = job["error"]
     return summary
