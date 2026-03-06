@@ -62,7 +62,7 @@ class TritonPythonModel:
 
         return text.strip()
 
-    _GUIDED_JSON_SCHEMA = {
+    _JSON_SCHEMA = json.dumps({
         "type": "array",
         "items": {
             "type": "object",
@@ -85,7 +85,7 @@ class TritonPythonModel:
             },
             "required": ["bbox", "category"]
         }
-    }
+    })
 
     def _call_engine(self, prompt: str, image_b64: str, request_id: str = "") -> str:
         payload = {
@@ -96,7 +96,7 @@ class TritonPythonModel:
                 "temperature": 0.1,
                 "top_p": 0.9,
                 "max_tokens": self.max_tokens,
-                "guided_json": self._GUIDED_JSON_SCHEMA
+                "structured_outputs": json.dumps({"json": self._JSON_SCHEMA})
             }
         }
 
