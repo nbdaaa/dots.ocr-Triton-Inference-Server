@@ -33,7 +33,7 @@ class TritonPythonModel:
     def _build_raw_prompt(self, prompt: str) -> str:
         return (
             f"<|im_start|>user\n"
-            f"<|img|><|imgpad|><|endofimg|>\n"
+            f"<|img|><|imgpad|><|endofimg|>"
             f"{prompt}"
             f"<|im_end|>\n"
             f"<|im_start|>assistant\n"
