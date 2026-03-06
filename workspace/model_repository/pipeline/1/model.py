@@ -62,6 +62,31 @@ class TritonPythonModel:
 
         return text.strip()
 
+    _GUIDED_JSON_SCHEMA = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "bbox": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 4,
+                    "maxItems": 4
+                },
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "Caption", "Footnote", "Formula", "List-item",
+                        "Page-footer", "Page-header", "Picture",
+                        "Section-header", "Table", "Text", "Title"
+                    ]
+                },
+                "text": {"type": "string"}
+            },
+            "required": ["bbox", "category"]
+        }
+    }
+
     def _call_engine(self, prompt: str, image_b64: str, request_id: str = "") -> str:
         payload = {
             "text_input": self._build_raw_prompt(prompt),
@@ -70,7 +95,8 @@ class TritonPythonModel:
                 "stream": False,
                 "temperature": 0.1,
                 "top_p": 0.9,
-                "max_tokens": self.max_tokens
+                "max_tokens": self.max_tokens,
+                "guided_json": self._GUIDED_JSON_SCHEMA
             }
         }
 
