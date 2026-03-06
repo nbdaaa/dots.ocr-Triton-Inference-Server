@@ -9,7 +9,9 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any
 
-import fitz
+import glob
+import subprocess
+import tempfile
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
@@ -51,12 +53,24 @@ thread_pool = ThreadPoolExecutor(max_workers=16)
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def render_pdf_pages(pdf_bytes: bytes) -> list:
-    mat = fitz.Matrix(DPI / 72, DPI / 72)
     pages = []
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-        for page in doc:
-            pix = page.get_pixmap(matrix=mat)
-            pages.append(base64.b64encode(pix.tobytes("png")).decode())
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pdf_path = os.path.join(tmpdir, "input.pdf")
+        out_prefix = os.path.join(tmpdir, "page")
+
+        with open(pdf_path, "wb") as f:
+            f.write(pdf_bytes)
+
+        subprocess.run(
+            ["pdftoppm", "-png", "-r", str(DPI), pdf_path, out_prefix],
+            check=True,
+            capture_output=True,
+        )
+
+        for img_path in sorted(glob.glob(f"{out_prefix}-*.png")):
+            with open(img_path, "rb") as f:
+                pages.append(base64.b64encode(f.read()).decode())
+
     return pages
 
 
