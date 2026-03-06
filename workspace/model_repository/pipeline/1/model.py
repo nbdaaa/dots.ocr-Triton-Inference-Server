@@ -69,7 +69,8 @@ class TritonPythonModel:
             "parameters": {
                 "stream": False,
                 "temperature": 0,
-                "max_tokens": self.max_tokens
+                "max_tokens": self.max_tokens,
+                "repetition_penalty": 1.05
             }
         }
 
