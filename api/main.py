@@ -62,7 +62,7 @@ def render_pdf_pages(pdf_bytes: bytes) -> list:
             f.write(pdf_bytes)
 
         subprocess.run(
-            ["pdftoppm", "-png", "-r", str(DPI), pdf_path, out_prefix],
+            ["pdftoppm", "-png", pdf_path, out_prefix],
             check=True,
             capture_output=True,
         )
