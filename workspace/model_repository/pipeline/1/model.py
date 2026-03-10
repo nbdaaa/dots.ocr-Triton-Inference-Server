@@ -93,10 +93,10 @@ class TritonPythonModel:
             "image": [image_b64],
             "parameters": {
                 "stream": False,
-                "temperature": 0.15,
+                "temperature": 0.5,
                 "top_p": 0.9,
                 "max_tokens": self.max_tokens,
-                "repetition_penalty": 1.1,
+                "repetition_penalty": 1.2,
                 "structured_outputs": json.dumps({"json": self._JSON_SCHEMA})
             }
         }
