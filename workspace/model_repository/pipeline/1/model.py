@@ -96,6 +96,7 @@ class TritonPythonModel:
                 "temperature": 0.1,
                 "top_p": 0.9,
                 "max_tokens": self.max_tokens,
+                "repetition_penalty": 1.1,
                 "structured_outputs": json.dumps({"json": self._JSON_SCHEMA})
             }
         }
