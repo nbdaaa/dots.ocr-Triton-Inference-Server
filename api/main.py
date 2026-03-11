@@ -260,7 +260,8 @@ async def _run_ocr_stream(job_id: str, file_filename: str, pages_to_process: lis
         except asyncio.CancelledError:
             await _job_incr(job_id, "ocr_fail_pages")
             raise
-        except Exception:
+        except Exception as e:
+            logger.error("[job=%s page=%d] OCR failed: %s", job_id, i, e, exc_info=True)
             await _job_incr(job_id, "ocr_fail_pages")
         finally:
             _active[job_id]["active_request_ids"].discard(request_id)
