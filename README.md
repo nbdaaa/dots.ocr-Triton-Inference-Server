@@ -62,13 +62,13 @@ Ba container sẽ khởi động: **triton**, **prometheus**, **grafana**.
 | Dịch vụ      | URL                        | Ghi chú              |
 |---------------|----------------------------|----------------------|
 | Triton        | http://localhost:54280     | HTTP inference API   |
-| API           | http://localhost:54188     | FastAPI endpoints    |
+| API           | http://localhost:     | FastAPI endpoints    |
 | Prometheus    | http://localhost:9090      | targets → triton UP  |
 | Grafana       | http://localhost:3000      | admin / admin        |
 | RedisInsight  | http://localhost:5540      | Redis GUI            |
 
 ```bash
-ssh -p PORT_SSH root@IP_PUBLIC -L 8080:localhost:8080 -L 3000:localhost:3000 -L 9090:localhost:9090 -L HTTP_PORT:localhost:HTTP_PORT
+ssh -p PORT_SSH root@IP_PUBLIC -L 8080:localhost:8080 -L 3000:localhost:3000 -L 9090:localhost:9090 -L 5540:localhost:5540 -L HTTP_PORT:localhost:HTTP_PORT
 ```
 
 Trong Grafana: vào **Dashboards → Triton Inference Server** để xem dashboard NVIDIA Triton.
