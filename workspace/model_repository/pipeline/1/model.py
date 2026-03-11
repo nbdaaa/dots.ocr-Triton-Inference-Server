@@ -117,13 +117,11 @@ class TritonPythonModel:
             last_output = ""
             buf         = b""
             token_count = 0
-            raw_chunks  = []
 
             while True:
                 chunk = resp.read(512)
                 if not chunk:
                     break
-                raw_chunks.append(chunk)
                 buf += chunk
 
                 while b"\n" in buf:
@@ -152,14 +150,12 @@ class TritonPythonModel:
                     if "error" in obj:
                         raise RuntimeError(f"Engine error: {obj['error']}")
                     if "text_output" in obj:
-                        last_output = obj["text_output"]
+                        last_output += obj["text_output"]
 
         finally:
             conn.close()
 
         if not last_output:
-            raw = b"".join(raw_chunks)
-            print(f"[pipeline] token_count={token_count}, raw_bytes={len(raw)}, raw={raw[:500]}", flush=True)
             raise RuntimeError("Engine returned no output")
 
         return last_output
