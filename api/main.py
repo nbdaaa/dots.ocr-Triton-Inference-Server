@@ -19,6 +19,7 @@ import tempfile
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
 
@@ -31,6 +32,13 @@ def JSONResponse(content, **kwargs):
 
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 TRITON_URL    = os.environ.get("TRITON_URL", "http://localhost:8000")
 OCR_INFER_URL = f"{TRITON_URL}/v2/models/pipeline/infer"
