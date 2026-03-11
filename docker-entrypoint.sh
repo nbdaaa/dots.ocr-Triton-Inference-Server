@@ -54,6 +54,9 @@ EOF
 
 echo "[entrypoint] pipeline config.pbtxt updated: ${PIPELINE_COUNT} CPU instance(s)"
 
+# Install redis-py for pipeline cancel support
+pip install redis --quiet --no-cache-dir
+
 # Start Triton
 exec tritonserver \
   --model-repository=/models \
