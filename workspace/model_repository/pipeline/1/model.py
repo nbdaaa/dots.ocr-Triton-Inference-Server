@@ -140,17 +140,21 @@ class TritonPythonModel:
                     try:
                         obj = json.loads(line)
                     except json.JSONDecodeError:
+                        print(f"[pipeline] non-JSON line: {line[:200]}", flush=True)
                         continue
 
                     if "error" in obj:
                         raise RuntimeError(f"Engine error: {obj['error']}")
                     if "text_output" in obj:
                         last_output = obj["text_output"]
+                    else:
+                        print(f"[pipeline] stream line keys: {list(obj.keys())}", flush=True)
 
         finally:
             conn.close()
 
         if not last_output:
+            print(f"[pipeline] token_count={token_count}, last_output empty", flush=True)
             raise RuntimeError("Engine returned no output")
 
         return last_output
