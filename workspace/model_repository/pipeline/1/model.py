@@ -28,7 +28,7 @@ class TritonPythonModel:
         else:
             self.triton_http_url = params.get("triton_http_url", {}).get("string_value", "http://127.0.0.1:8000")
 
-        self.generate_url = f"{self.triton_http_url}/v2/models/{self.engine_model_name}/generate"
+        self.generate_url = f"{self.triton_http_url}/v2/models/{self.engine_model_name}/generate_stream"
         self.max_tokens   = int(params.get("max_tokens", {}).get("string_value", "4096"))
 
         redis_url    = os.environ.get("REDIS_URL", "redis://localhost:6379")
