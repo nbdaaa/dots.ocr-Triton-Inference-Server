@@ -68,6 +68,13 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  redisinsight:
+    image: redis/redisinsight:latest
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - redis
+
   prometheus:
     image: prom/prometheus:${PROMETHEUS_IMAGE_TAG}
     networks:

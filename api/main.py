@@ -2,12 +2,16 @@ import asyncio
 import base64
 import http.client
 import json
+import logging
 import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional
 from urllib.parse import urlparse
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 import glob
 import subprocess
