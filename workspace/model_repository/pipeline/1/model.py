@@ -33,7 +33,7 @@ class TritonPythonModel:
     def _build_raw_prompt(self, prompt: str) -> str:
         return (
             f"<|im_start|>user\n"
-            f"<|img|><|imgpad|><|endofimg|>\n"
+            f"<|img|><|imgpad|><|endofimg|>"
             f"{prompt}"
             f"<|im_end|>\n"
             f"<|im_start|>assistant\n"
@@ -62,14 +62,42 @@ class TritonPythonModel:
 
         return text.strip()
 
-    def _call_engine(self, prompt: str, image_b64: str) -> str:
+    _JSON_SCHEMA = json.dumps({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "bbox": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 4,
+                    "maxItems": 4
+                },
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "Caption", "Footnote", "Formula", "List-item",
+                        "Page-footer", "Page-header", "Picture",
+                        "Section-header", "Table", "Text", "Title"
+                    ]
+                },
+                "text": {"type": "string"}
+            },
+            "required": ["bbox", "category"]
+        }
+    })
+
+    def _call_engine(self, prompt: str, image_b64: str, request_id: str = "") -> str:
         payload = {
             "text_input": self._build_raw_prompt(prompt),
             "image": [image_b64],
             "parameters": {
                 "stream": False,
-                "temperature": 0,
-                "max_tokens": self.max_tokens
+                "temperature": 0.05,
+                "top_p": 0.9,
+                "max_tokens": self.max_tokens,
+                "repetition_penalty": 1.2,
+                "structured_outputs": json.dumps({"json": self._JSON_SCHEMA})
             }
         }
 
@@ -119,7 +147,10 @@ class TritonPythonModel:
                 if not image_b64.strip():
                     raise ValueError("IMAGE_B64 must be provided")
 
-                raw_text = self._call_engine(prompt, image_b64)
+                request_id_tensor = pb_utils.get_input_tensor_by_name(request, "REQUEST_ID")
+                request_id = _to_str(request_id_tensor.as_numpy().reshape(-1)[0]) if request_id_tensor is not None else ""
+
+                raw_text = self._call_engine(prompt, image_b64, request_id)
                 clean_text = self._clean_output(raw_text, prompt)
 
                 out_tensor = pb_utils.Tensor(

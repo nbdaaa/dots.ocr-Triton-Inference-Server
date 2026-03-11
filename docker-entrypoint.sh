@@ -34,8 +34,9 @@ backend: "python"
 max_batch_size: 0
 
 input [
-  { name: "PROMPT"    data_type: TYPE_STRING dims: [1] },
-  { name: "IMAGE_B64" data_type: TYPE_STRING dims: [1] }
+  { name: "PROMPT"     data_type: TYPE_STRING dims: [1] },
+  { name: "IMAGE_B64"  data_type: TYPE_STRING dims: [1] },
+  { name: "REQUEST_ID" data_type: TYPE_STRING dims: [1] optional: true }
 ]
 
 output [
