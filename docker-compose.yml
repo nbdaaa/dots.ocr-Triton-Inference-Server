@@ -30,12 +30,27 @@ services:
       - TRITON_METRICS_PORT=${TRITON_METRICS_PORT}
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - VLLM_LOGGING_LEVEL=DEBUG
+      - REDIS_URL=redis://localhost:${REDIS_PORT}
+      # Uncomment after the model is fully cached:
+      # - HF_HUB_OFFLINE=1
+      # - TRANSFORMERS_OFFLINE=1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${TRITON_HTTP_PORT}/v2/health/ready"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 120s
+
+  redis:
+    image: redis:${REDIS_IMAGE_TAG}
+    network_mode: host
+    command: redis-server --port ${REDIS_PORT}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "${REDIS_PORT}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   api:
     build:
@@ -45,10 +60,20 @@ services:
     environment:
       - TRITON_URL=http://localhost:${TRITON_HTTP_PORT}
       - API_PORT=${API_PORT}
+      - REDIS_URL=redis://localhost:${REDIS_PORT}
     depends_on:
       triton:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - redis
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_IMAGE_TAG}
