@@ -30,7 +30,8 @@ services:
       - TRITON_METRICS_PORT=${TRITON_METRICS_PORT}
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - VLLM_LOGGING_LEVEL=DEBUG
-      - REDIS_URL=redis://localhost:${REDIS_PORT}
+      - REDIS_URL=${REDIS_URL}
+      - CLUSTER_ID=${CLUSTER_ID}
       # Uncomment after the model is fully cached:
       # - HF_HUB_OFFLINE=1
       # - TRANSFORMERS_OFFLINE=1
@@ -43,6 +44,7 @@ services:
 
   redis:
     image: redis:${REDIS_IMAGE_TAG}
+    profiles: ["local-redis"]
     network_mode: host
     command: redis-server --port ${REDIS_PORT}
     restart: unless-stopped
@@ -60,16 +62,19 @@ services:
     environment:
       - TRITON_URL=http://localhost:${TRITON_HTTP_PORT}
       - API_PORT=${API_PORT}
-      - REDIS_URL=redis://localhost:${REDIS_PORT}
+      - REDIS_URL=${REDIS_URL}
+      - CLUSTER_ID=${CLUSTER_ID}
     depends_on:
       triton:
         condition: service_healthy
       redis:
         condition: service_healthy
+        required: false
     restart: unless-stopped
 
   redisinsight:
     image: redis/redisinsight:latest
+    profiles: ["local-redis"]
     network_mode: host
     restart: unless-stopped
     depends_on:

@@ -45,6 +45,7 @@ OCR_INFER_URL = f"{TRITON_URL}/v2/models/pipeline/infer"
 REDIS_URL     = os.environ.get("REDIS_URL", "redis://localhost:6379")
 JOB_TTL       = int(os.environ.get("JOB_TTL_DAYS", "7")) * 86400
 CANCEL_TTL    = 60   # seconds — cancel keys auto-expire after 60s as a safety net
+CLUSTER_ID    = os.environ.get("CLUSTER_ID", "")
 DPI           = 200
 PDF_STORE_DIR = os.environ.get("PDF_STORE_DIR", "/data/pdfs")
 
@@ -83,7 +84,8 @@ async def _startup():
     _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
     # Jobs left as "processing" from a previous crash can never finish — mark paused
     async for key in _redis.scan_iter("job:*"):
-        if await _redis.hget(key, "status") == "processing":
+        status, cluster_id = await _redis.hmget(key, "status", "cluster_id")
+        if status == "processing" and cluster_id == CLUSTER_ID:
             await _redis.hset(key, "status", "paused")
 
 
@@ -94,28 +96,32 @@ async def _shutdown():
 
 # ─── Redis helpers ─────────────────────────────────────────────────────────────
 
+def _job_key(job_id: str) -> str:
+    return f"job:{job_id}"
+
+
 async def _job_set(job_id: str, **fields):
     mapping = {
         k: json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)
         for k, v in fields.items()
     }
-    await _redis.hset(f"job:{job_id}", mapping=mapping)
-    await _redis.expire(f"job:{job_id}", JOB_TTL)
+    await _redis.hset(_job_key(job_id), mapping=mapping)
+    await _redis.expire(_job_key(job_id), JOB_TTL)
 
 
 async def _job_get(job_id: str) -> Optional[dict]:
-    data = await _redis.hgetall(f"job:{job_id}")
+    data = await _redis.hgetall(_job_key(job_id))
     return data if data else None
 
 
 async def _job_incr(job_id: str, field: str, amount: int = 1):
-    await _redis.hincrby(f"job:{job_id}", field, amount)
-    await _redis.expire(f"job:{job_id}", JOB_TTL)
+    await _redis.hincrby(_job_key(job_id), field, amount)
+    await _redis.expire(_job_key(job_id), JOB_TTL)
 
 
 async def _page_save(job_id: str, idx: int, result: dict):
-    await _redis.hset(f"job:{job_id}", f"result:{idx}", json.dumps(result, ensure_ascii=False))
-    await _redis.expire(f"job:{job_id}", JOB_TTL)
+    await _redis.hset(_job_key(job_id), f"result:{idx}", json.dumps(result, ensure_ascii=False))
+    await _redis.expire(_job_key(job_id), JOB_TTL)
 
 
 def _build_summary(job_id: str, data: dict, include_results: bool = False) -> dict:
@@ -288,7 +294,7 @@ async def _run_ocr_stream(job_id: str, file_filename: str, pages_to_process: lis
             if page_result is not None:
                 yield json.dumps(page_result, ensure_ascii=False) + "\n"
 
-        current = await _redis.hget(f"job:{job_id}", "status")
+        current = await _redis.hget(_job_key(job_id), "status")
         if current == "processing":
             await _job_set(job_id, status="completed")
             current = "completed"
@@ -335,6 +341,7 @@ async def infer_pdf(
 
     await _job_set(
         job_id,
+        cluster_id          = CLUSTER_ID,
         status              = "processing",
         filename            = file.filename,
         pdf_path            = pdf_path,
@@ -458,7 +465,7 @@ async def delete_pdf(job_id: str):
     if pdf_path and os.path.exists(pdf_path):
         os.remove(pdf_path)
 
-    await _redis.delete(f"job:{job_id}")
+    await _redis.delete(_job_key(job_id))
     return JSONResponse({"job_id": job_id, "deleted": True})
 
 
