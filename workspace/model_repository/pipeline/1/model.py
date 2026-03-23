@@ -92,10 +92,10 @@ class TritonPythonModel:
             "image": [image_b64],
             "parameters": {
                 "stream": True,          # streaming enables token-level cancel checks
-                "temperature": 0.05,
-                "top_p": 0.9,
+                # "temperature": 0.05,
+                # "top_p": 0.9,
                 "max_tokens": self.max_tokens,
-                "repetition_penalty": 1.2,
+                # "repetition_penalty": 1.2,
                 "structured_outputs": json.dumps({"json": self._JSON_SCHEMA})
             }
         }
