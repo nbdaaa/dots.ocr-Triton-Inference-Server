@@ -109,20 +109,24 @@ for hash_dir in os.listdir(MODULES_DIR):
         footer = ""
         if "class DotsOCRConfig" in content:
             footer += """
-# Register config with transformers AutoConfig so AutoModel.from_config works
+# Register config with transformers AutoConfig
 try:
     from transformers import AutoConfig as _AutoConfig
     _AutoConfig.register("dots_ocr", DotsOCRConfig, exist_ok=True)
 except Exception:
     pass
-"""
-        if "class DotsOCRForCausalLM" in content:
-            footer += """
-# Register model with transformers AutoModel
+
+# Patch __init__ to inject "AutoModel" into auto_map so that
+# AutoModel.from_config(..., trust_remote_code=True) can load the model
+# class dynamically — bypassing the class-identity registry mismatch.
 try:
-    from transformers import AutoModel as _AutoModel
-    from configuration_dots import DotsOCRConfig as _DotsOCRConfig
-    _AutoModel.register(_DotsOCRConfig, DotsOCRForCausalLM, exist_ok=True)
+    _orig_dots_init = DotsOCRConfig.__init__
+    def _patched_dots_init(self, *_a, **_kw):
+        _orig_dots_init(self, *_a, **_kw)
+        _am = getattr(self, "auto_map", None)
+        if isinstance(_am, dict) and "AutoModelForCausalLM" in _am and "AutoModel" not in _am:
+            _am["AutoModel"] = _am["AutoModelForCausalLM"]
+    DotsOCRConfig.__init__ = _patched_dots_init
 except Exception:
     pass
 """
