@@ -171,9 +171,9 @@ def ocr_page_sync(image_b64: str, prompt: str, cancel_event: threading.Event, re
 
     payload = {
         "inputs": [
-            {"name": "PROMPT",     "shape": [1], "datatype": "BYTES", "data": [prompt]},
-            {"name": "IMAGE_B64",  "shape": [1], "datatype": "BYTES", "data": [image_b64]},
-            {"name": "REQUEST_ID", "shape": [1], "datatype": "BYTES", "data": [request_id]},
+            {"name": "PROMPT",     "shape": [1, 1], "datatype": "BYTES", "data": [prompt]},
+            {"name": "IMAGE_B64",  "shape": [1, 1], "datatype": "BYTES", "data": [image_b64]},
+            {"name": "REQUEST_ID", "shape": [1, 1], "datatype": "BYTES", "data": [request_id]},
         ]
     }
     body   = json.dumps(payload).encode()
