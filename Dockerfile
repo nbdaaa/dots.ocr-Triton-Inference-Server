@@ -168,10 +168,13 @@ if utils_paths:
         else:
             print("[patch-A] _load_module call not found in utils.py — skipping", flush=True)
 
-# ── Fix B: register DotsOCRForCausalLM → TransformersForMultimodalLM ─────────
-# registry.py uses short names like ("transformers", "TransformersForMultimodalLM")
-# The target dict is _TRANSFORMERS_SUPPORTED_MODELS.
-# Anchor: "Emu3ForConditionalGeneration": ("transformers", "TransformersForMultimodalLM")
+# ── Fix B: register DotsOCRForCausalLM → native Qwen2.5-VL vLLM class ────────
+# DotsOCRForCausalLM inherits directly from Qwen2_5_VLForConditionalGeneration
+# and shares the identical weight structure.  vLLM's native Qwen2.5-VL class
+# handles visual tokens inline (no get_image_features API) and loads weights
+# from the standard Qwen2.5-VL checkpoint format correctly.
+# Using TransformersForMultimodalLM was wrong: it calls get_image_features()
+# which Qwen2.5-VL does not have.
 reg_paths = glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/models/registry.py")
 if not reg_paths:
     print("[patch-B] registry.py not found — skipping", flush=True)
@@ -182,29 +185,56 @@ else:
     if '"DotsOCRForCausalLM"' in src:
         print("[patch-B] DotsOCRForCausalLM already registered", flush=True)
     else:
-        new_line = '    "DotsOCRForCausalLM": ("transformers", "TransformersForMultimodalLM"),  # dots.ocr patch'
+        # Dynamically find the module/class name for Qwen2_5_VLForConditionalGeneration
+        # so we stay in sync regardless of vLLM version naming conventions.
+        qwen_match = re.search(
+            r'"Qwen2_5_VLForConditionalGeneration"\s*:\s*\(\s*"(\w+)"\s*,\s*"(\w+)"\s*\)',
+            src
+        )
+        if qwen_match:
+            qwen_module = qwen_match.group(1)
+            qwen_class  = qwen_match.group(2)
+            print(f"[patch-B] found Qwen2.5-VL: ({qwen_module!r}, {qwen_class!r})", flush=True)
+        else:
+            # Fallback: well-known name used since vLLM 0.5
+            qwen_module, qwen_class = "qwen2_5_vl", "Qwen2_5_VLForConditionalGeneration"
+            print(f"[patch-B] Qwen2_5_VL entry not found, using fallback: {qwen_module}/{qwen_class}", flush=True)
+
+        new_line = f'    "DotsOCRForCausalLM": ("{qwen_module}", "{qwen_class}"),  # dots.ocr patch'
         inserted = False
 
-        # Strategy 1: insert after the Emu3 entry (confirmed to exist in the file)
-        for anchor in [
-            '"Emu3ForConditionalGeneration": ("transformers", "TransformersForMultimodalLM"),  # noqa: E501',
-            '"Emu3ForConditionalGeneration": ("transformers", "TransformersForMultimodalLM"),',
-            '"SmolLM3ForCausalLM": ("transformers", "TransformersForCausalLM"),',
-        ]:
-            if anchor in src:
-                src = src.replace(anchor, anchor + "\n" + new_line)
-                open(reg_path, "w").write(src)
-                print(f"[patch-B] DotsOCRForCausalLM registered in registry.py (anchor: {anchor[:40]}...)", flush=True)
-                inserted = True
-                break
+        # Insert after the Qwen2_5_VL entry itself (best anchor)
+        qwen_anchor_m = re.search(
+            r'"Qwen2_5_VLForConditionalGeneration"\s*:\s*\([^)]+\),',
+            src
+        )
+        if qwen_anchor_m:
+            anchor_str = qwen_anchor_m.group(0)
+            src = src.replace(anchor_str, anchor_str + "\n" + new_line, 1)
+            open(reg_path, "w").write(src)
+            print(f"[patch-B] DotsOCRForCausalLM inserted after Qwen2_5_VL entry", flush=True)
+            inserted = True
 
         if not inserted:
-            # Strategy 2: insert at end of _TRANSFORMERS_SUPPORTED_MODELS dict
+            # Fallback: insert after any multimodal anchor line
+            for anchor in [
+                '"Emu3ForConditionalGeneration": ("transformers", "TransformersForMultimodalLM"),  # noqa: E501',
+                '"Emu3ForConditionalGeneration": ("transformers", "TransformersForMultimodalLM"),',
+            ]:
+                if anchor in src:
+                    src = src.replace(anchor, anchor + "\n" + new_line)
+                    open(reg_path, "w").write(src)
+                    print(f"[patch-B] DotsOCRForCausalLM registered (anchor: {anchor[:40]}...)", flush=True)
+                    inserted = True
+                    break
+
+        if not inserted:
+            # Last resort: append to _TRANSFORMERS_SUPPORTED_MODELS dict
             m = re.search(r'(_TRANSFORMERS_SUPPORTED_MODELS\s*=\s*\{[^}]*)\}', src, re.DOTALL)
             if m:
                 src = src[:m.end()-1] + new_line + "\n}" + src[m.end():]
                 open(reg_path, "w").write(src)
-                print("[patch-B] DotsOCRForCausalLM registered (end of _TRANSFORMERS_SUPPORTED_MODELS)", flush=True)
+                print("[patch-B] DotsOCRForCausalLM registered (end of dict)", flush=True)
                 inserted = True
 
         if not inserted:
