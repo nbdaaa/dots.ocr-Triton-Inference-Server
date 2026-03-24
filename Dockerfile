@@ -31,7 +31,21 @@ if not m:
     print("[patch] check_argument_for_proper_class not found — skipping", flush=True)
     sys.exit(0)
 
-print(f"[patch] found signature: {src[m.start():m.end()]!r}", flush=True)
+sig_text = src[m.start():m.end()]
+print(f"[patch] found signature: {sig_text!r}", flush=True)
+
+# Extract actual parameter names from signature (strip type annotations)
+# e.g. "(self, attribute_name: str, value: Any) -> None:" → ['self', 'attribute_name', 'value']
+paren_m = re.search(r'\((.+)\)', sig_text, re.DOTALL)
+if not paren_m:
+    print("[patch] could not parse parameter list — skipping", flush=True)
+    sys.exit(0)
+param_names = [re.match(r'\s*(\w+)', p).group(1)
+               for p in paren_m.group(1).split(',')
+               if re.match(r'\s*\w+', p)]
+print(f"[patch] parameter names: {param_names}", flush=True)
+# The second non-self parameter is the value being type-checked
+arg_param = param_names[2] if len(param_names) > 2 else 'arg'
 
 body_start = src.index("\n", m.end()) + 1
 j = body_start
@@ -39,13 +53,13 @@ while j < len(src) and src[j] in (' ', '\t'):
     j += 1
 indent = src[body_start:j]
 guard = (
-    f"{indent}if arg is None:  # _dots_ocr_allow_none: skip check for absent optional processors\n"
+    f"{indent}if {arg_param} is None:  # _dots_ocr_allow_none: skip check for absent optional processors\n"
     f"{indent}    return\n"
 )
 patched = src[:body_start] + guard + src[body_start:]
 with open(path, "w") as f:
     f.write(patched)
-print(f"[patch] {path} patched — None is now allowed for optional processors", flush=True)
+print(f"[patch] {path} patched — None allowed for optional processors (param: {arg_param!r})", flush=True)
 EOF
 
 # Patch vLLM to load DotsOCR (a multimodal model) correctly.
