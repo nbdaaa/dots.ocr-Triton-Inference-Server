@@ -4,9 +4,45 @@ set -e
 # ── Detect available GPUs ─────────────────────────────────────────────────────
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
 
+# ── Compute max batch size from GPU memory ────────────────────────────────────
+# Uses the first GPU's total memory as the reference.
+# Rough budget:
+#   - Model weights (7B bfloat16)  ≈ 14 000 MB
+#   - Per-request overhead
+#     (KV cache + activations for a typical OCR page) ≈ 2 000 MB
+#   - Safety headroom                                 ≈ 1 000 MB
+# Capped at 8 to avoid excessive queue latency.
+MODEL_MEM_MB=14000
+PER_REQ_MEM_MB=2000
+SAFETY_MB=1000
+
+if [ "$NUM_GPUS" -gt 0 ]; then
+    TOTAL_GPU_MEM=$(nvidia-smi --query-gpu=memory.total \
+        --format=csv,noheader,nounits 2>/dev/null | head -1)
+    MAX_BATCH=$(( (TOTAL_GPU_MEM - MODEL_MEM_MB - SAFETY_MB) / PER_REQ_MEM_MB ))
+    [ "$MAX_BATCH" -lt 1 ] && MAX_BATCH=1
+    [ "$MAX_BATCH" -gt 8 ] && MAX_BATCH=8
+else
+    MAX_BATCH=1
+fi
+
+echo "[entrypoint] GPU total mem: ${TOTAL_GPU_MEM:-0} MB → max_batch_size=${MAX_BATCH}"
+
+# Build preferred_batch_size list (powers of 2 up to MAX_BATCH)
+PREFERRED_SIZES=""
+B=1
+while [ "$B" -le "$MAX_BATCH" ]; do
+    [ -n "$PREFERRED_SIZES" ] && PREFERRED_SIZES+=", "
+    PREFERRED_SIZES+="$B"
+    B=$(( B * 2 ))
+done
+
 # ── Generate pipeline/config.pbtxt ───────────────────────────────────────────
-# One GPU instance per physical GPU so each carries its own model replica.
-# Falls back to a single CPU instance when no GPU is present (dev/test).
+# One GPU instance per physical GPU; each instance loads its own model replica
+# and handles requests independently (Triton load-balances across instances).
+# dynamic_batching lets Triton accumulate up to MAX_BATCH pending requests and
+# send them together in a single execute() call — the model.py runs them as
+# one batched model.generate() for higher GPU utilisation.
 if [ "$NUM_GPUS" -eq 0 ]; then
     INSTANCE_GROUPS="  { kind: KIND_CPU count: 1 }"
 else
@@ -21,7 +57,7 @@ fi
 
 printf "name: \"pipeline\"
 backend: \"python\"
-max_batch_size: 0
+max_batch_size: %d
 
 input [
   { name: \"PROMPT\"     data_type: TYPE_STRING dims: [1] },
@@ -37,24 +73,25 @@ instance_group [
 %b
 ]
 
+dynamic_batching {
+  preferred_batch_size: [ %s ]
+  max_queue_delay_microseconds: 100000
+}
+
 parameters: { key: \"model_name\" value: { string_value: \"rednote-hilab/dots.ocr\" } }
 parameters: { key: \"max_tokens\"  value: { string_value: \"24000\" } }
-" "$INSTANCE_GROUPS" > /models/pipeline/config.pbtxt
+" "$MAX_BATCH" "$INSTANCE_GROUPS" "$PREFERRED_SIZES" > /models/pipeline/config.pbtxt
 
-echo "[entrypoint] pipeline config.pbtxt updated: ${NUM_GPUS:-0} GPU(s)"
+echo "[entrypoint] pipeline config.pbtxt updated: ${NUM_GPUS:-0} GPU(s), max_batch_size=${MAX_BATCH}"
 cat /models/pipeline/config.pbtxt
 
 # ── Patch dots.ocr custom module imports ─────────────────────────────────────
-# dots.ocr ships trust_remote_code modules that use relative imports which break
-# because the dot in "rednote-hilab/dots.ocr" makes Python misparse the package.
-# We pre-cache the modules then convert relative → absolute imports.
 echo "[fix] Patching dots.ocr module imports..."
 python3 - <<'PYEOF'
 import sys, os, re
 
 MODULES_DIR = "/root/.cache/huggingface/modules/transformers_modules/rednote-hilab/dots.ocr"
 
-# Step 1: trigger caching if not yet done
 if not os.path.isdir(MODULES_DIR):
     print("[fix] Pre-caching dots.ocr custom modules...", flush=True)
     try:
@@ -67,7 +104,6 @@ if not os.path.isdir(MODULES_DIR):
     print("[fix] Modules dir not found after pre-cache — skipping patch", flush=True)
     sys.exit(0)
 
-# Step 2: patch every .py file in every hash sub-directory
 for hash_dir in os.listdir(MODULES_DIR):
     hash_path = os.path.join(MODULES_DIR, hash_dir)
     if not os.path.isdir(hash_path):
@@ -81,30 +117,23 @@ for hash_dir in os.listdir(MODULES_DIR):
         if "_dots_ocr_fix_applied" in content:
             continue
 
-        # Header: add hash dir to sys.path so bare module names resolve
         header = (
             "# _dots_ocr_fix_applied\n"
             "import sys as _sys, os as _os\n"
             "_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))\n"
         )
-        # from .module import X  →  from module import X
         fixed = re.sub(r"^from \.([\w]+) import", r"from \1 import", content, flags=re.MULTILINE)
-        # from . import module  →  import module
         fixed = re.sub(r"^from \. import ([\w]+)", r"import \1", fixed, flags=re.MULTILINE)
 
-        # Footer: register DotsOCRConfig with AutoConfig so trust_remote_code works
         footer = ""
         if "class DotsOCRConfig" in content:
             footer += """
-# Register config with transformers AutoConfig
 try:
     from transformers import AutoConfig as _AutoConfig
     _AutoConfig.register("dots_ocr", DotsOCRConfig, exist_ok=True)
 except Exception:
     pass
 
-# Patch __init__ to inject "AutoModel" into auto_map so AutoModel.from_config
-# can load the model class dynamically in the vLLM worker process.
 try:
     _orig_dots_init = DotsOCRConfig.__init__
     def _patched_dots_init(self, *_a, **_kw):
