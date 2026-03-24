@@ -63,8 +63,8 @@ class TritonPythonModel:
             self.model_name,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
-            device_map=self.device,
-        )
+            low_cpu_mem_usage=True,
+        ).to(self.device)
         self.model.eval()
         log.log_info(f"[pipeline] Model ready on {self.device}")
 

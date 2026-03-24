@@ -125,7 +125,7 @@ print("[fix] dots.ocr module patch complete", flush=True)
 PYEOF
 
 # ── Runtime dependencies ──────────────────────────────────────────────────────
-pip install redis qwen-vl-utils --quiet --no-cache-dir
+pip install redis qwen-vl-utils accelerate --quiet --no-cache-dir
 
 # ── Start Triton ──────────────────────────────────────────────────────────────
 exec tritonserver \
