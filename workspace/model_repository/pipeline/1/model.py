@@ -71,6 +71,13 @@ class TritonPythonModel:
         ).to(self.device)
         self.model.eval()
 
+        # Compile for better decode throughput (~20-30% speedup on repetitive shapes)
+        try:
+            self.model = torch.compile(self.model, mode="reduce-overhead")
+            log.log_info("[pipeline] torch.compile applied")
+        except Exception as exc:
+            log.log_warn(f"[pipeline] torch.compile skipped: {exc}")
+
         # Log free memory so operators can tune max_batch_size
         if torch.cuda.is_available():
             free, total = torch.cuda.mem_get_info(self.device)

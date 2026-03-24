@@ -12,9 +12,9 @@ NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l
 #     (KV cache + activations for a typical OCR page) ≈ 2 000 MB
 #   - Safety headroom                                 ≈ 1 000 MB
 # Capped at 8 to avoid excessive queue latency.
-MODEL_MEM_MB=14000
-PER_REQ_MEM_MB=2000
-SAFETY_MB=1000
+MODEL_MEM_MB=8000    # actual: ~7500 MB for 7B bfloat16
+PER_REQ_MEM_MB=2500  # KV cache + activations per OCR page (up to 24K tokens)
+SAFETY_MB=2000       # headroom for image pixel tensors and fragmentation
 
 if [ "$NUM_GPUS" -gt 0 ]; then
     TOTAL_GPU_MEM=$(nvidia-smi --query-gpu=memory.total \
@@ -75,7 +75,7 @@ instance_group [
 
 dynamic_batching {
   preferred_batch_size: [ %s ]
-  max_queue_delay_microseconds: 100000
+  max_queue_delay_microseconds: 200000
 }
 
 parameters: { key: \"model_name\" value: { string_value: \"rednote-hilab/dots.ocr\" } }
