@@ -21,7 +21,7 @@ curl -fsSL "https://grafana.com/api/dashboards/22897/revisions/latest/download" 
 Trước khi chạy hệ thống, hãy tạo file `.env` ở thư mục gốc của project. Cấu trúc file `.env`:
 ```env
 # Triton Inference Server
-TRITON_IMAGE_TAG=25.11-vllm-python-py3
+TRITON_IMAGE_TAG=25.10-vllm-python-py3
 TRITON_HTTP_PORT= HTTP PORT of Server
 TRITON_GRPC_PORT=8001
 TRITON_METRICS_PORT=8002

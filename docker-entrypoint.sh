@@ -54,6 +54,60 @@ EOF
 
 echo "[entrypoint] pipeline config.pbtxt updated: ${PIPELINE_COUNT} CPU instance(s)"
 
+# Fix: dots.ocr custom modules use relative imports that break because the dot
+# in "rednote-hilab/dots.ocr" makes Python misparse the module package path
+# (it looks for a "dots" package instead of "dots.ocr" directory).
+# Solution: pre-cache the modules then patch relative → absolute imports.
+echo "[fix] Patching dots.ocr module imports..."
+python3 - <<'PYEOF'
+import sys, os, re
+
+MODULES_DIR = "/root/.cache/huggingface/modules/transformers_modules/rednote-hilab/dots.ocr"
+
+# Step 1: if modules not yet cached, trigger caching via AutoConfig
+# (the import will fail but the .py files still get written to MODULES_DIR)
+if not os.path.isdir(MODULES_DIR):
+    print("[fix] Pre-caching dots.ocr custom modules...", flush=True)
+    try:
+        from transformers import AutoConfig
+        AutoConfig.from_pretrained("rednote-hilab/dots.ocr", trust_remote_code=True)
+    except Exception as e:
+        print(f"[fix] Pre-cache done (import error expected): {type(e).__name__}", flush=True)
+
+if not os.path.isdir(MODULES_DIR):
+    print("[fix] Modules dir not found after pre-cache — skipping patch", flush=True)
+    sys.exit(0)
+
+# Step 2: patch every .py file in every hash sub-directory
+for hash_dir in os.listdir(MODULES_DIR):
+    hash_path = os.path.join(MODULES_DIR, hash_dir)
+    if not os.path.isdir(hash_path):
+        continue
+    for fname in os.listdir(hash_path):
+        if not fname.endswith(".py"):
+            continue
+        fpath = os.path.join(hash_path, fname)
+        with open(fpath) as f:
+            content = f.read()
+        if "from ." not in content or "_dots_ocr_fix_applied" in content:
+            continue
+        # Add the hash dir to sys.path so bare module names resolve correctly
+        header = (
+            "# _dots_ocr_fix_applied\n"
+            "import sys as _sys, os as _os\n"
+            "_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))\n"
+        )
+        # from .module import X  →  from module import X
+        fixed = re.sub(r"^from \.([\w]+) import", r"from \1 import", content, flags=re.MULTILINE)
+        # from . import module  →  import module
+        fixed = re.sub(r"^from \. import ([\w]+)", r"import \1", fixed, flags=re.MULTILINE)
+        with open(fpath, "w") as f:
+            f.write(header + fixed)
+        print(f"[fix] Patched {fpath}", flush=True)
+
+print("[fix] dots.ocr module patch complete", flush=True)
+PYEOF
+
 # Install redis-py for pipeline cancel support
 pip install redis --quiet --no-cache-dir
 
