@@ -67,6 +67,7 @@ class TritonPythonModel:
             self.model_name,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
             low_cpu_mem_usage=True,
         ).to(self.device)
         self.model.eval()

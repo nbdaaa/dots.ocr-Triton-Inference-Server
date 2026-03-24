@@ -13,6 +13,11 @@ RUN pip install --no-cache-dir \
     redis \
     qwen-vl-utils
 
+# ── Flash Attention 2 ─────────────────────────────────────────────────────────
+# Compiles C++/CUDA kernels — must run after base deps are installed.
+# Speeds up prefill 2-3x and reduces decode memory pressure.
+RUN pip install --no-cache-dir flash-attn --no-build-isolation
+
 # ── Patch transformers: allow None for optional multi-modal sub-processors ────
 # DotsOCRProcessor (Qwen2.5-VL based) never passes video_processor (image-only
 # model).  ProcessorMixin.check_argument_for_proper_class rejects None values
