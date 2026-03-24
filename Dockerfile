@@ -1,14 +1,22 @@
 ARG TRITON_IMAGE_TAG
 FROM nvcr.io/nvidia/tritonserver:${TRITON_IMAGE_TAG}
+# Recommended tag for PyTorch backend (no vLLM overhead):
+#   TRITON_IMAGE_TAG=25.10-pyt-python-py3
+# The vllm-python-py3 variant also works since it includes transformers.
 
-RUN pip install pymupdf --no-cache-dir
+# ── Python dependencies ───────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    transformers \
+    accelerate \
+    pillow \
+    pymupdf \
+    redis \
+    qwen-vl-utils
 
-# Allow None for optional multi-modal sub-processors (e.g. video_processor in
-# Qwen2_5_VLProcessor).  dots.ocr is image-only, so its DotsOCRProcessor never
-# passes video_processor, which defaults to None and then fails the strict type
-# check added in newer transformers.  Inserting an early return for None is safe:
-# the attribute is simply not registered on the processor instance.
-# Uses regex to match the method signature regardless of type annotations.
+# ── Patch transformers: allow None for optional multi-modal sub-processors ────
+# DotsOCRProcessor (Qwen2.5-VL based) never passes video_processor (image-only
+# model).  ProcessorMixin.check_argument_for_proper_class rejects None values
+# for registered attributes; inserting an early-return for None is safe.
 RUN python3 - <<'EOF'
 import glob, re, sys
 
@@ -25,26 +33,20 @@ if "_dots_ocr_allow_none" in src:
     print("[patch] processing_utils.py already patched — skipping", flush=True)
     sys.exit(0)
 
-# Match method def with any signature (with or without type annotations)
 m = re.search(r'def check_argument_for_proper_class\(self[^)]*\)[^:]*:', src)
 if not m:
     print("[patch] check_argument_for_proper_class not found — skipping", flush=True)
     sys.exit(0)
 
 sig_text = src[m.start():m.end()]
-print(f"[patch] found signature: {sig_text!r}", flush=True)
-
-# Extract actual parameter names from signature (strip type annotations)
-# e.g. "(self, attribute_name: str, value: Any) -> None:" → ['self', 'attribute_name', 'value']
-paren_m = re.search(r'\((.+)\)', sig_text, re.DOTALL)
+paren_m  = re.search(r'\((.+)\)', sig_text, re.DOTALL)
 if not paren_m:
     print("[patch] could not parse parameter list — skipping", flush=True)
     sys.exit(0)
+
 param_names = [re.match(r'\s*(\w+)', p).group(1)
                for p in paren_m.group(1).split(',')
                if re.match(r'\s*\w+', p)]
-print(f"[patch] parameter names: {param_names}", flush=True)
-# The second non-self parameter is the value being type-checked
 arg_param = param_names[2] if len(param_names) > 2 else 'arg'
 
 body_start = src.index("\n", m.end()) + 1
@@ -53,303 +55,11 @@ while j < len(src) and src[j] in (' ', '\t'):
     j += 1
 indent = src[body_start:j]
 guard = (
-    f"{indent}if {arg_param} is None:  # _dots_ocr_allow_none: skip check for absent optional processors\n"
+    f"{indent}if {arg_param} is None:  # _dots_ocr_allow_none\n"
     f"{indent}    return\n"
 )
 patched = src[:body_start] + guard + src[body_start:]
 with open(path, "w") as f:
     f.write(patched)
-print(f"[patch] {path} patched — None allowed for optional processors (param: {arg_param!r})", flush=True)
-EOF
-
-# Patch vLLM to load DotsOCR (a multimodal model) correctly.
-#
-# Root cause: DotsOCRForCausalLM is not in vLLM's registry, so vLLM falls back
-# to trust_remote_code and picks TransformersForCausalLM whose hf_to_vllm_mapper
-# only remaps "model." → "model.model." but leaves "vision_tower.*" keys unmapped.
-# The weight loader then can't find vision_tower in the vLLM wrapper → ValueError.
-#
-# Fix A: patch transformers.py so that TransformersForCausalLM's mapper prepends
-#        "model." to ALL checkpoint keys (handles vision_tower.* correctly).
-# Fix B: register DotsOCRForCausalLM in the vLLM model registry pointing to
-#        TransformersForMultimodalLM, which already has the correct mapper.
-RUN python3 - <<'EOF'
-import sys, glob, re
-
-utils_paths = glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/models/utils.py")
-
-# ── Fix A: patch load_weights in utils.py to remap unrecognised top-level keys ─
-# The mapper in TransformersForCausalLM has "vision_tower"→"model.vision_tower",
-# but if WeightsMapper prefix-matching requires an exact separator match and the
-# key is e.g. "vision_tower.encoder.weight" the prefix lookup may still fail.
-# Safest fix: BEFORE _load_module is called, programmatically remap any weight
-# whose first path component is not a named child of the vLLM wrapper but IS a
-# named child of wrapper.model (the HF model).
-if utils_paths:
-    utils_path = utils_paths[0]
-    src = open(utils_path).read()
-
-    if "_dots_ocr_remap" in src:
-        print("[patch-A] utils.py remap already applied", flush=True)
-    else:
-        # Find the line that calls _load_module from load_weights and insert
-        # the remap block immediately before it.
-        needle = "autoloaded_weights = set(self._load_module("
-        if needle in src:
-            # Detect indentation of that line
-            idx = src.index(needle)
-            line_start = src.rfind("\n", 0, idx) + 1
-            indent = " " * (idx - line_start)
-            remap_block = (
-                f"{indent}# _dots_ocr_remap: fix weight key paths for dots.ocr (Qwen2.5-VL based).\n"
-                f"{indent}# TransformersForMultimodalLM mapper (designed for InternVL) may convert\n"
-                f"{indent}# model.model.X → model.language_model.X, but Qwen2.5-VL stores the LM\n"
-                f"{indent}# as self.model (not self.language_model).  Also handles raw keys that\n"
-                f"{indent}# need 'model.' prepended when no mapper is active.\n"
-                f"{indent}try:\n"
-                f"{indent}    _vllm_top = set(dict(self.module.named_children()).keys())\n"
-                f"{indent}    _hf_children = (set(dict(self.module.model.named_children()).keys())\n"
-                f"{indent}                    if hasattr(self.module, 'model') and\n"
-                f"{indent}                       hasattr(self.module.model, 'named_children') else set())\n"
-                f"{indent}    def _dots_ocr_fix_key(_name):\n"
-                f"{indent}        _parts = _name.split('.')\n"
-                f"{indent}        if not _parts:\n"
-                f"{indent}            return _name\n"
-                f"{indent}        # Case 1: raw key without 'model.' prefix (e.g. TransformersForCausalLM\n"
-                f"{indent}        # with no mapper): prepend 'model.' when key is a known HF child.\n"
-                f"{indent}        if _parts[0] not in _vllm_top and _parts[0] in _hf_children:\n"
-                f"{indent}            return 'model.' + _name\n"
-                f"{indent}        # Case 2: mapper created model.language_model.X but HF model stores\n"
-                f"{indent}        # it as model.model.X (Qwen2.5-VL: self.model = language model).\n"
-                f"{indent}        if (_parts[0] == 'model' and len(_parts) >= 2 and\n"
-                f"{indent}                _parts[1] == 'language_model' and\n"
-                f"{indent}                'language_model' not in _hf_children and\n"
-                f"{indent}                'model' in _hf_children):\n"
-                f"{indent}            return 'model.model.' + '.'.join(_parts[2:])\n"
-                f"{indent}        # Case 3: mapper created model.vision_tower.X but HF model uses visual.\n"
-                f"{indent}        if (_parts[0] == 'model' and len(_parts) >= 2 and\n"
-                f"{indent}                _parts[1] == 'vision_tower' and\n"
-                f"{indent}                'vision_tower' not in _hf_children and\n"
-                f"{indent}                'visual' in _hf_children):\n"
-                f"{indent}            return 'model.visual.' + '.'.join(_parts[2:])\n"
-                f"{indent}        return _name\n"
-                f"{indent}    # Case 4: synthesise lm_head.weight from embed_tokens.weight when the\n"
-                f"{indent}    # checkpoint omits it (tie_word_embeddings=True).  The canonical vLLM\n"
-                f"{indent}    # path is always 'model.lm_head.weight' (child of the HF CausalLM model),\n"
-                f"{indent}    # NOT 'model.model.lm_head.weight' (which would be inside the inner LM).\n"
-                f"{indent}    # We track whether the real lm_head.weight appeared in the stream\n"
-                f"{indent}    # (normalised to 'model.lm_head.weight') to avoid emitting a duplicate.\n"
-                f"{indent}    import itertools as _itertools\n"
-                f"{indent}    _CANONICAL_LM_HEAD = 'model.lm_head.weight'\n"
-                f"{indent}    _seen_lm_head = set()\n"
-                f"{indent}    def _dots_ocr_gen(_n, _t):\n"
-                f"{indent}        _fixed = _dots_ocr_fix_key(_n)\n"
-                f"{indent}        # Track any lm_head.weight key, normalised to the canonical path\n"
-                f"{indent}        if 'lm_head.weight' in _fixed:\n"
-                f"{indent}            _seen_lm_head.add(_CANONICAL_LM_HEAD)\n"
-                f"{indent}        yield (_fixed, _t)\n"
-                f"{indent}        # Emit synthetic lm_head.weight only if not yet seen and key\n"
-                f"{indent}        # comes from embed_tokens (i.e. tied model missing lm_head)\n"
-                f"{indent}        if ('embed_tokens.weight' in _fixed and\n"
-                f"{indent}                _fixed.startswith('model.') and\n"
-                f"{indent}                _CANONICAL_LM_HEAD not in _seen_lm_head):\n"
-                f"{indent}            _seen_lm_head.add(_CANONICAL_LM_HEAD)  # prevent future dups\n"
-                f"{indent}            yield (_CANONICAL_LM_HEAD, _t)\n"
-                f"{indent}    weights = _itertools.chain.from_iterable(\n"
-                f"{indent}        _dots_ocr_gen(_n, _t) for _n, _t in weights)\n"
-                f"{indent}except Exception as _e:\n"
-                f"{indent}    import traceback as _tb; _tb.print_exc()\n"
-                f"{indent}\n"
-                f"{indent}"
-            )
-            patched = src[:idx] + remap_block + src[idx:]
-            open(utils_path, "w").write(patched)
-            print("[patch-A] utils.py remap block inserted before _load_module call", flush=True)
-        else:
-            print("[patch-A] _load_module call not found in utils.py — skipping", flush=True)
-
-# ── Fix B: register DotsOCRForCausalLM → native Qwen2.5-VL vLLM class ────────
-# DotsOCRForCausalLM inherits directly from Qwen2_5_VLForConditionalGeneration
-# and shares the identical weight structure.  vLLM's native Qwen2.5-VL class
-# handles visual tokens inline (no get_image_features API) and loads weights
-# from the standard Qwen2.5-VL checkpoint format correctly.
-# Using TransformersForMultimodalLM was wrong: it calls get_image_features()
-# which Qwen2.5-VL does not have.
-reg_paths = glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/models/registry.py")
-if not reg_paths:
-    print("[patch-B] registry.py not found — skipping", flush=True)
-else:
-    reg_path = reg_paths[0]
-    src = open(reg_path).read()
-
-    if '"DotsOCRForCausalLM"' in src:
-        print("[patch-B] DotsOCRForCausalLM already registered", flush=True)
-    else:
-        # Dynamically find the module/class name for Qwen2_5_VLForConditionalGeneration
-        # so we stay in sync regardless of vLLM version naming conventions.
-        qwen_match = re.search(
-            r'"Qwen2_5_VLForConditionalGeneration"\s*:\s*\(\s*"(\w+)"\s*,\s*"(\w+)"\s*\)',
-            src
-        )
-        if qwen_match:
-            qwen_module = qwen_match.group(1)
-            qwen_class  = qwen_match.group(2)
-            print(f"[patch-B] found Qwen2.5-VL: ({qwen_module!r}, {qwen_class!r})", flush=True)
-        else:
-            # Fallback: well-known name used since vLLM 0.5
-            qwen_module, qwen_class = "qwen2_5_vl", "Qwen2_5_VLForConditionalGeneration"
-            print(f"[patch-B] Qwen2_5_VL entry not found, using fallback: {qwen_module}/{qwen_class}", flush=True)
-
-        new_line = f'    "DotsOCRForCausalLM": ("{qwen_module}", "{qwen_class}"),  # dots.ocr patch'
-        inserted = False
-
-        # Insert after the Qwen2_5_VL entry itself (best anchor)
-        qwen_anchor_m = re.search(
-            r'"Qwen2_5_VLForConditionalGeneration"\s*:\s*\([^)]+\),',
-            src
-        )
-        if qwen_anchor_m:
-            anchor_str = qwen_anchor_m.group(0)
-            src = src.replace(anchor_str, anchor_str + "\n" + new_line, 1)
-            open(reg_path, "w").write(src)
-            print(f"[patch-B] DotsOCRForCausalLM inserted after Qwen2_5_VL entry", flush=True)
-            inserted = True
-
-        if not inserted:
-            # Fallback: insert after any multimodal anchor line
-            for anchor in [
-                '"Emu3ForConditionalGeneration": ("transformers", "TransformersForMultimodalLM"),  # noqa: E501',
-                '"Emu3ForConditionalGeneration": ("transformers", "TransformersForMultimodalLM"),',
-            ]:
-                if anchor in src:
-                    src = src.replace(anchor, anchor + "\n" + new_line)
-                    open(reg_path, "w").write(src)
-                    print(f"[patch-B] DotsOCRForCausalLM registered (anchor: {anchor[:40]}...)", flush=True)
-                    inserted = True
-                    break
-
-        if not inserted:
-            # Last resort: append to _TRANSFORMERS_SUPPORTED_MODELS dict
-            m = re.search(r'(_TRANSFORMERS_SUPPORTED_MODELS\s*=\s*\{[^}]*)\}', src, re.DOTALL)
-            if m:
-                src = src[:m.end()-1] + new_line + "\n}" + src[m.end():]
-                open(reg_path, "w").write(src)
-                print("[patch-B] DotsOCRForCausalLM registered (end of dict)", flush=True)
-                inserted = True
-
-        if not inserted:
-            print("[patch-B] no anchor found — Fix B skipped", flush=True)
-
-print("[patch] Done", flush=True)
-EOF
-
-# Patch vLLM default_loader to handle tied embeddings (lm_head.weight tied to
-# embed_tokens.weight when tie_word_embeddings=True).  The checkpoint omits the
-# tied weight; vLLM's post-load validator raises ValueError seeing it unloaded.
-#
-# Root cause: the validator computes `not_initialized = all_params - loaded_weights`
-# BEFORE our code can run, so patching loaded_weights is too late.  Instead we
-# find the variable that holds the not-initialized set (read from the raise's
-# f-string), filter lm_head entries out of it, and only raise if non-empty.
-RUN python3 - <<'EOF'
-import glob, re, sys
-
-paths = glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/model_loader/default_loader.py")
-if not paths:
-    print("[patch-tie] default_loader.py not found — skipping", flush=True)
-    sys.exit(0)
-
-path = paths[0]
-src = open(path).read()
-
-if "_dots_ocr_skip_tied" in src:
-    print("[patch-tie] already patched", flush=True)
-    sys.exit(0)
-
-needle = 'raise ValueError("Following weights were not initialized from '
-if needle not in src:
-    print("[patch-tie] needle not found — skipping", flush=True)
-    sys.exit(0)
-
-idx = src.index(needle)
-
-# Walk forward to find the closing paren of raise ValueError(...)
-depth = 0
-end = idx
-while end < len(src):
-    c = src[end]
-    if c == '(':
-        depth += 1
-    elif c == ')':
-        depth -= 1
-        if depth == 0:
-            end += 1
-            break
-    end += 1
-
-raise_stmt = src[idx:end]
-print(f"[patch-tie] raise statement: {raise_stmt!r}", flush=True)
-
-# Extract the variable name referenced in the f-string, e.g. {weights_not_loaded}
-var_match = re.search(r'\{(\w+)\}', raise_stmt)
-if not var_match:
-    print("[patch-tie] could not find variable in raise f-string — skipping", flush=True)
-    sys.exit(0)
-
-var_name = var_match.group(1)
-print(f"[patch-tie] not-initialized variable: {var_name!r}", flush=True)
-
-# Detect indentation of the raise line
-line_start = src.rfind('\n', 0, idx) + 1
-indent = ' ' * (idx - line_start)
-
-# Build patch: filter lm_head out of the not-initialized variable, then
-# only raise if anything remains (handles both set and dict types).
-filtered_raise = (
-    f"# _dots_ocr_skip_tied: lm_head.weight is tied to embed_tokens; skip it\n"
-    f"{indent}_dots_lm_skip = {{'model.lm_head.weight', 'lm_head.weight'}}\n"
-    f"{indent}if isinstance({var_name}, dict):\n"
-    f"{indent}    {var_name} = {{_k: _v for _k, _v in {var_name}.items() if _k not in _dots_lm_skip}}\n"
-    f"{indent}else:\n"
-    f"{indent}    {var_name} = {{_w for _w in {var_name} if _w not in _dots_lm_skip}}\n"
-    f"{indent}if {var_name}:\n"
-    f"{indent}    {raise_stmt}"
-)
-
-patched = src[:idx] + filtered_raise + src[end:]
-open(path, "w").write(patched)
-print(f"[patch-tie] {path} patched — lm_head filtered from '{var_name}' before raise", flush=True)
-EOF
-
-# Patch vLLM backend to respect Triton's GPU assignment via CUDA_VISIBLE_DEVICES.
-# Without this, vLLM ignores instance_group gpus: [N] and always uses GPU 0.
-# Fix: https://github.com/triton-inference-server/server/issues/6855
-RUN python3 - <<'EOF'
-import re, sys
-
-path = "/opt/tritonserver/backends/vllm/model.py"
-try:
-    with open(path) as f:
-        src = f.read()
-except FileNotFoundError:
-    print(f"[patch] {path} not found — skipping", flush=True)
-    sys.exit(0)
-
-patch = (
-    '    import os\n'
-    '    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.get("model_instance_device_id", "0"))\n'
-)
-
-marker = "async def initialize(self, args):"
-if patch.strip() in src:
-    print("[patch] already applied — skipping", flush=True)
-    sys.exit(0)
-if marker not in src:
-    print(f"[patch] marker '{marker}' not found — skipping", flush=True)
-    sys.exit(0)
-
-patched = src.replace(marker, marker + "\n" + patch, 1)
-with open(path, "w") as f:
-    f.write(patched)
-print("[patch] CUDA_VISIBLE_DEVICES patch applied to vLLM backend", flush=True)
+print(f"[patch] {path} patched (param: {arg_param!r})", flush=True)
 EOF

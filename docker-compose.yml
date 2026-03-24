@@ -29,7 +29,6 @@ services:
       - TRITON_GRPC_PORT=${TRITON_GRPC_PORT}
       - TRITON_METRICS_PORT=${TRITON_METRICS_PORT}
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-      - VLLM_LOGGING_LEVEL=DEBUG
       - REDIS_URL=redis://localhost:${REDIS_PORT}
       # Uncomment after the model is fully cached:
       # - HF_HUB_OFFLINE=1

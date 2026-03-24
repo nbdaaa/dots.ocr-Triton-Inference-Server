@@ -1,201 +1,240 @@
-import http.client
+"""
+dots.ocr — Triton Python backend (pure PyTorch / HuggingFace)
+
+Replaces the former two-model setup (pipeline CPU → dots_ocr vLLM) with a
+single model that loads rednote-hilab/dots.ocr directly via HuggingFace
+transformers and runs inference on the assigned GPU instance.
+
+External interface is identical to the previous pipeline model:
+  Inputs : PROMPT (string [1]), IMAGE_B64 (string [1]), REQUEST_ID (string [1], optional)
+  Output : TEXT (string [1])
+
+Cancellation is still driven by Redis: any caller sets  cancel:<request_id>
+and generation stops within ~5 tokens.
+"""
+
+import base64
+import io
 import json
 import os
 import re
-from urllib.parse import urlparse
+import threading
 
 import numpy as np
-import redis
 import triton_python_backend_utils as pb_utils
 
 
-def _to_str(x):
-    if isinstance(x, bytes):
+def _to_str(x) -> str:
+    if isinstance(x, (bytes, bytearray, np.bytes_)):
         return x.decode("utf-8")
     return str(x)
 
 
 class TritonPythonModel:
-    def initialize(self, args):
-        model_config = json.loads(args["model_config"])
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def initialize(self, args: dict) -> None:
+        model_config = json.loads(args.get("model_config", "{}"))
         params = model_config.get("parameters", {})
 
-        self.engine_model_name = params.get("engine_model_name", {}).get("string_value", "dots_ocr")
+        def _p(key: str, default: str) -> str:
+            return params.get(key, {}).get("string_value", default)
 
-        triton_http_port = os.environ.get("TRITON_HTTP_PORT")
-        if triton_http_port:
-            self.triton_http_url = f"http://127.0.0.1:{triton_http_port}"
-        else:
-            self.triton_http_url = params.get("triton_http_url", {}).get("string_value", "http://127.0.0.1:8000")
+        self.model_name     = _p("model_name", "rednote-hilab/dots.ocr")
+        self.max_new_tokens = int(_p("max_tokens", "24000"))
 
-        self.generate_url = f"{self.triton_http_url}/v2/models/{self.engine_model_name}/generate_stream"
-        self.max_tokens   = int(params.get("max_tokens", {}).get("string_value", "4096"))
+        device_id   = str(args.get("model_instance_device_id", "0"))
+        self.device = f"cuda:{device_id}"
 
-        redis_url    = os.environ.get("REDIS_URL", "redis://localhost:6379")
-        self._redis  = redis.Redis.from_url(redis_url, decode_responses=True)
+        log = pb_utils.Logger
+        log.log_info(f"[pipeline] Loading {self.model_name!r} on {self.device}")
 
-    def _build_raw_prompt(self, prompt: str) -> str:
-        return (
-            f"<|im_start|>user\n"
-            f"<|img|><|imgpad|><|endofimg|>"
-            f"{prompt}"
-            f"<|im_end|>\n"
-            f"<|im_start|>assistant\n"
+        import torch
+        from transformers import AutoModelForCausalLM, AutoProcessor
+
+        self.processor = AutoProcessor.from_pretrained(
+            self.model_name,
+            trust_remote_code=True,
         )
 
-    def _clean_output(self, text: str, user_prompt: str) -> str:
-        marker = "<|im_start|>assistant\n"
-        idx = text.find(marker)
-        if idx != -1:
-            text = text[idx + len(marker):]
-        else:
-            text = re.sub(
-                r"^(?:<\|img\|>)?(?:<\|imgpad\|>)*<\|endofimg\|>\s*",
-                "",
-                text,
-                flags=re.DOTALL,
-            )
-            prompt_pat = r"^\s*" + re.escape(user_prompt) + r"\s*"
-            text = re.sub(prompt_pat, "", text, count=1, flags=re.DOTALL)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+            device_map=self.device,
+        )
+        self.model.eval()
+        log.log_info(f"[pipeline] Model ready on {self.device}")
 
-        text = re.sub(r"<\|im_end\|>.*$", "", text, flags=re.DOTALL)
-        return text.strip()
-
-    _JSON_SCHEMA = json.dumps({
-        "type": "array",
-        "items": {
-            "type": "object",
-            "properties": {
-                "bbox": {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": 4,
-                    "maxItems": 4
-                },
-                "category": {
-                    "type": "string",
-                    "enum": [
-                        "Caption", "Footnote", "Formula", "List-item",
-                        "Page-footer", "Page-header", "Picture",
-                        "Section-header", "Table", "Text", "Title"
-                    ]
-                },
-                "text": {"type": "string"}
-            },
-            "required": ["bbox", "category"]
-        }
-    })
-
-    def _call_engine(self, prompt: str, image_b64: str, request_id: str = "") -> str:
-        payload = {
-            "text_input": self._build_raw_prompt(prompt),
-            "image": [image_b64],
-            "parameters": {
-                "stream": True,          # streaming enables token-level cancel checks
-                # "temperature": 0.05,
-                # "top_p": 0.9,
-                "max_tokens": self.max_tokens,
-                # "repetition_penalty": 1.2,
-                "structured_outputs": json.dumps({"json": self._JSON_SCHEMA})
-            }
-        }
-
-        body   = json.dumps(payload).encode("utf-8")
-        parsed = urlparse(self.generate_url)
-        conn   = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=300)
-
+        # Redis — optional; graceful degradation if unavailable
+        self.redis_client = None
+        redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
         try:
-            conn.request("POST", parsed.path, body=body, headers={"Content-Type": "application/json"})
-            resp = conn.getresponse()
+            import redis
+            client = redis.from_url(redis_url, decode_responses=True)
+            client.ping()
+            self.redis_client = client
+            log.log_info("[pipeline] Redis connected")
+        except Exception as exc:
+            log.log_warn(f"[pipeline] Redis unavailable — cancellation disabled: {exc}")
 
-            if resp.status != 200:
-                detail = resp.read().decode("utf-8", errors="replace")
-                raise RuntimeError(f"Engine HTTPError {resp.status}: {detail}")
+    def finalize(self) -> None:
+        import torch
+        try:
+            del self.model
+        except AttributeError:
+            pass
+        torch.cuda.empty_cache()
 
-            # Read NDJSON stream token by token.
-            # Check Redis cancel key every 5 tokens to keep overhead low.
-            last_output = ""
-            buf         = b""
-            token_count = 0
-
-            while True:
-                chunk = resp.read(512)
-                if not chunk:
-                    break
-                buf += chunk
-
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    token_count += 1
-                    if request_id and token_count % 5 == 0:
-                        if self._redis.exists(f"cancel:{request_id}"):
-                            self._redis.delete(f"cancel:{request_id}")
-                            conn.close()
-                            raise RuntimeError("Cancelled")
-
-                    if line.startswith(b"data: "):
-                        line = line[6:]
-                    if not line:
-                        continue
-
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-
-                    if "error" in obj:
-                        raise RuntimeError(f"Engine error: {obj['error']}")
-                    if "text_output" in obj:
-                        last_output += obj["text_output"]
-
-        finally:
-            conn.close()
-
-        if not last_output:
-            raise RuntimeError("Engine returned no output")
-
-        return last_output
+    # ------------------------------------------------------------------
+    # Triton entry-point
+    # ------------------------------------------------------------------
 
     def execute(self, requests):
         responses = []
-
         for request in requests:
             try:
-                prompt_tensor    = pb_utils.get_input_tensor_by_name(request, "PROMPT")
-                image_b64_tensor = pb_utils.get_input_tensor_by_name(request, "IMAGE_B64")
-
-                if prompt_tensor is None:
-                    raise ValueError("Missing input tensor: PROMPT")
-                if image_b64_tensor is None:
-                    raise ValueError("Missing input tensor: IMAGE_B64")
-
-                prompt    = _to_str(prompt_tensor.as_numpy().reshape(-1)[0])
-                image_b64 = _to_str(image_b64_tensor.as_numpy().reshape(-1)[0])
-
-                if not image_b64.strip():
-                    raise ValueError("IMAGE_B64 must be provided")
-
-                request_id_tensor = pb_utils.get_input_tensor_by_name(request, "REQUEST_ID")
-                request_id = _to_str(request_id_tensor.as_numpy().reshape(-1)[0]) if request_id_tensor is not None else ""
-
-                raw_text   = self._call_engine(prompt, image_b64, request_id)
-                clean_text = self._clean_output(raw_text, prompt)
-
-                out_tensor = pb_utils.Tensor(
-                    "TEXT",
-                    np.array([clean_text], dtype=object),
+                responses.append(self._handle(request))
+            except Exception as exc:
+                import traceback
+                pb_utils.Logger.log_error(
+                    f"[pipeline] Unhandled error: {exc}\n{traceback.format_exc()}"
                 )
-                responses.append(pb_utils.InferenceResponse(output_tensors=[out_tensor]))
-
-            except Exception as e:
                 responses.append(
                     pb_utils.InferenceResponse(
-                        error=pb_utils.TritonError(str(e))
+                        output_tensors=[],
+                        error=pb_utils.TritonError(str(exc)),
                     )
                 )
-
         return responses
+
+    def _handle(self, request):
+        def _str(name: str) -> str:
+            t = pb_utils.get_input_tensor_by_name(request, name)
+            if t is None:
+                return ""
+            return _to_str(t.as_numpy().reshape(-1)[0])
+
+        prompt     = _str("PROMPT")
+        image_b64  = _str("IMAGE_B64")
+        request_id = _str("REQUEST_ID")
+
+        if not image_b64.strip():
+            raise ValueError("IMAGE_B64 must be provided")
+
+        text = self._infer(prompt, image_b64, request_id)
+        text = self._clean_output(text, prompt)
+
+        out = pb_utils.Tensor("TEXT", np.array([text], dtype=object))
+        return pb_utils.InferenceResponse(output_tensors=[out])
+
+    # ------------------------------------------------------------------
+    # Core inference
+    # ------------------------------------------------------------------
+
+    def _infer(self, prompt: str, image_b64: str, request_id: str) -> str:
+        import torch
+        from PIL import Image
+        from transformers import StoppingCriteria, StoppingCriteriaList
+
+        # Decode image
+        image = Image.open(io.BytesIO(base64.b64decode(image_b64))).convert("RGB")
+
+        # Build Qwen2.5-VL chat messages
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text",  "text":  prompt},
+                ],
+            }
+        ]
+
+        # Apply chat template
+        text_input = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
+        # Tokenise + encode image pixels
+        # Prefer qwen_vl_utils for proper pixel processing; fall back to direct PIL
+        try:
+            from qwen_vl_utils import process_vision_info
+            image_inputs, video_inputs = process_vision_info(messages)
+            inputs = self.processor(
+                text=[text_input],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt",
+            )
+        except ImportError:
+            inputs = self.processor(
+                text=[text_input],
+                images=[image],
+                padding=True,
+                return_tensors="pt",
+            )
+
+        inputs = inputs.to(self.device)
+
+        # Redis-driven stopping criteria
+        cancel_flag  = threading.Event()
+        redis_client = self.redis_client
+
+        class _CancelCriteria(StoppingCriteria):
+            def __init__(self):
+                self._n = 0
+
+            def __call__(self, input_ids, scores, **_):
+                if cancel_flag.is_set():
+                    return True
+                self._n += 1
+                if request_id and redis_client and self._n % 5 == 0:
+                    try:
+                        if redis_client.exists(f"cancel:{request_id}"):
+                            cancel_flag.set()
+                            return True
+                    except Exception:
+                        pass
+                return False
+
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=self.max_new_tokens,
+                do_sample=False,
+                stopping_criteria=StoppingCriteriaList([_CancelCriteria()]),
+            )
+
+        if cancel_flag.is_set():
+            return ""
+
+        # Decode only newly generated tokens
+        prompt_len = inputs["input_ids"].shape[1]
+        new_ids    = generated_ids[:, prompt_len:]
+        return self.processor.batch_decode(
+            new_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+
+    # ------------------------------------------------------------------
+    # Output cleaning
+    # ------------------------------------------------------------------
+
+    def _clean_output(self, text: str, user_prompt: str) -> str:
+        # Strip any trailing model markers that survived skip_special_tokens
+        for marker in ("<|im_end|>", "<|endoftext|>", "<|im_start|>assistant"):
+            text = text.replace(marker, "")
+
+        # Strip trailing assistant tag pattern
+        text = re.sub(r"<\|im_end\|>.*$", "", text, flags=re.DOTALL)
+
+        # Strip any accidental prompt echo
+        if user_prompt and text.startswith(user_prompt):
+            text = text[len(user_prompt):]
+
+        return text.strip()

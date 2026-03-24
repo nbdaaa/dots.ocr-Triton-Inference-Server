@@ -1,3 +1,6 @@
+# This file is overwritten at container startup by docker-entrypoint.sh
+# which detects available GPUs and sets instance_group accordingly.
+# The version below is the single-GPU fallback used for development.
 name: "pipeline"
 backend: "python"
 max_batch_size: 0
@@ -13,9 +16,8 @@ output [
 ]
 
 instance_group [
-  { kind: KIND_CPU count: 4 }
+  { kind: KIND_GPU count: 1 gpus: [ 0 ] }
 ]
 
-parameters: { key: "engine_model_name" value: { string_value: "dots_ocr" } }
-parameters: { key: "max_tokens"        value: { string_value: "24000" } }
-parameters: { key: "triton_http_url"   value: { string_value: "http://127.0.0.1:8000" } }
+parameters: { key: "model_name"  value: { string_value: "rednote-hilab/dots.ocr" } }
+parameters: { key: "max_tokens"  value: { string_value: "24000" } }
