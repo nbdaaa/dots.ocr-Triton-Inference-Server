@@ -17,24 +17,6 @@ RUN pip install pymupdf --no-cache-dir
 RUN python3 - <<'EOF'
 import sys, glob, re
 
-# ── Diagnostics ──────────────────────────────────────────────────────────────
-tfm_paths = glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/models/transformers.py")
-utils_paths = glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/models/utils.py")
-
-if tfm_paths:
-    tfm_path = tfm_paths[0]
-    lines = open(tfm_path).read().splitlines()
-    # Print L685-L710 (load_weights + first mapper)
-    print(f"[diag] transformers.py L685-L710:", flush=True)
-    for i, line in enumerate(lines[684:710], 685):
-        print(f"[diag]   L{i}: {line}", flush=True)
-
-if utils_paths:
-    ulines = open(utils_paths[0]).read().splitlines()
-    print(f"[diag] utils.py L260-L300:", flush=True)
-    for i, line in enumerate(ulines[259:300], 260):
-        print(f"[diag]   L{i}: {line}", flush=True)
-
 # ── Fix A: patch load_weights in utils.py to remap unrecognised top-level keys ─
 # The mapper in TransformersForCausalLM has "vision_tower"→"model.vision_tower",
 # but if WeightsMapper prefix-matching requires an exact separator match and the
@@ -82,51 +64,47 @@ if utils_paths:
         else:
             print("[patch-A] _load_module call not found in utils.py — skipping", flush=True)
 
-# ── Fix B: register DotsOCRForCausalLM in vLLM model registry ───────────────
-# Search in multiple candidate files (registry may not be in __init__.py)
-registry_candidates = (
-    glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/models/registry.py") +
-    glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/models/__init__.py")
-)
-
-registered = False
-for reg_path in registry_candidates:
+# ── Fix B: register DotsOCRForCausalLM → TransformersForMultimodalLM ─────────
+# registry.py uses short names like ("transformers", "TransformersForMultimodalLM")
+# The target dict is _TRANSFORMERS_SUPPORTED_MODELS.
+# Anchor: "Emu3ForConditionalGeneration": ("transformers", "TransformersForMultimodalLM")
+reg_paths = glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/models/registry.py")
+if not reg_paths:
+    print("[patch-B] registry.py not found — skipping", flush=True)
+else:
+    reg_path = reg_paths[0]
     src = open(reg_path).read()
+
     if '"DotsOCRForCausalLM"' in src:
-        print(f"[patch-B] already registered in {reg_path}", flush=True)
-        registered = True
-        break
+        print("[patch-B] DotsOCRForCausalLM already registered", flush=True)
+    else:
+        new_line = '    "DotsOCRForCausalLM": ("transformers", "TransformersForMultimodalLM"),  # dots.ocr patch'
+        inserted = False
 
-    # Show lines with Transformers-related entries
-    lines = src.splitlines()
-    print(f"[patch-B] scanning {reg_path} for insertion point:", flush=True)
-    for i, line in enumerate(lines, 1):
-        if "Transformers" in line or "_MODELS" in line:
-            print(f"[patch-B]   L{i}: {line}", flush=True)
+        # Strategy 1: insert after the Emu3 entry (confirmed to exist in the file)
+        for anchor in [
+            '"Emu3ForConditionalGeneration": ("transformers", "TransformersForMultimodalLM"),  # noqa: E501',
+            '"Emu3ForConditionalGeneration": ("transformers", "TransformersForMultimodalLM"),',
+            '"SmolLM3ForCausalLM": ("transformers", "TransformersForCausalLM"),',
+        ]:
+            if anchor in src:
+                src = src.replace(anchor, anchor + "\n" + new_line)
+                open(reg_path, "w").write(src)
+                print(f"[patch-B] DotsOCRForCausalLM registered in registry.py (anchor: {anchor[:40]}...)", flush=True)
+                inserted = True
+                break
 
-    new_entry = '"DotsOCRForCausalLM": ("vllm.model_executor.models.transformers", "TransformersForCausalLM"),'
+        if not inserted:
+            # Strategy 2: insert at end of _TRANSFORMERS_SUPPORTED_MODELS dict
+            m = re.search(r'(_TRANSFORMERS_SUPPORTED_MODELS\s*=\s*\{[^}]*)\}', src, re.DOTALL)
+            if m:
+                src = src[:m.end()-1] + new_line + "\n}" + src[m.end():]
+                open(reg_path, "w").write(src)
+                print("[patch-B] DotsOCRForCausalLM registered (end of _TRANSFORMERS_SUPPORTED_MODELS)", flush=True)
+                inserted = True
 
-    for needle in [
-        '"TransformersForMultimodalLM": ("vllm.model_executor.models.transformers", "TransformersForMultimodalLM"),',
-        '"TransformersForCausalLM": ("vllm.model_executor.models.transformers", "TransformersForCausalLM"),',
-    ]:
-        if needle in src:
-            for line in lines:
-                if needle.strip() in line:
-                    indent = " " * (len(line) - len(line.lstrip()))
-                    break
-            else:
-                indent = "    "
-            src = src.replace(needle, needle + "\n" + indent + new_entry)
-            open(reg_path, "w").write(src)
-            print(f"[patch-B] registered DotsOCRForCausalLM in {reg_path}", flush=True)
-            registered = True
-            break
-    if registered:
-        break
-
-if not registered:
-    print("[patch-B] no suitable registry file found — Fix B skipped", flush=True)
+        if not inserted:
+            print("[patch-B] no anchor found — Fix B skipped", flush=True)
 
 print("[patch] Done", flush=True)
 EOF
