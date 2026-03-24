@@ -3,6 +3,47 @@ FROM nvcr.io/nvidia/tritonserver:${TRITON_IMAGE_TAG}
 
 RUN pip install pymupdf --no-cache-dir
 
+# Allow None for optional multi-modal sub-processors (e.g. video_processor in
+# Qwen2_5_VLProcessor).  dots.ocr is image-only, so its DotsOCRProcessor never
+# passes video_processor, which defaults to None and then fails the strict type
+# check added in newer transformers.  Inserting an early return for None is safe:
+# the attribute is simply not registered on the processor instance.
+RUN python3 - <<'EOF'
+import glob, sys
+
+paths = glob.glob("/usr/local/lib/python3*/dist-packages/transformers/processing_utils.py")
+if not paths:
+    print("[patch] transformers/processing_utils.py not found — skipping", flush=True)
+    sys.exit(0)
+
+path = paths[0]
+with open(path) as f:
+    src = f.read()
+
+marker = "def check_argument_for_proper_class(self, attribute_name, arg):"
+if "_dots_ocr_allow_none" in src:
+    print("[patch] processing_utils.py already patched — skipping", flush=True)
+    sys.exit(0)
+if marker not in src:
+    print(f"[patch] {marker!r} not found — skipping", flush=True)
+    sys.exit(0)
+
+idx = src.index(marker)
+body_start = src.index("\n", idx) + 1
+j = body_start
+while j < len(src) and src[j] in (' ', '\t'):
+    j += 1
+indent = src[body_start:j]
+guard = (
+    f"{indent}if arg is None:  # _dots_ocr_allow_none: skip check for absent optional processors\n"
+    f"{indent}    return\n"
+)
+patched = src[:body_start] + guard + src[body_start:]
+with open(path, "w") as f:
+    f.write(patched)
+print(f"[patch] {path} patched — None is now allowed for optional processors", flush=True)
+EOF
+
 # Patch vLLM to load DotsOCR (a multimodal model) correctly.
 #
 # Root cause: DotsOCRForCausalLM is not in vLLM's registry, so vLLM falls back
