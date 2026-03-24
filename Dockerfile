@@ -190,6 +190,62 @@ else:
 print("[patch] Done", flush=True)
 EOF
 
+# Patch vLLM default_loader to handle tied embeddings (lm_head.weight tied to
+# embed_tokens.weight when tie_word_embeddings=True).  The checkpoint omits the
+# tied weight; vLLM's post-load validator raises ValueError seeing it unloaded.
+# Fix: call tie_weights() on the HF model then mark tied params as loaded.
+RUN python3 - <<'EOF'
+import glob
+
+paths = glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/model_loader/default_loader.py")
+if not paths:
+    print("[patch-tie] default_loader.py not found — skipping", flush=True)
+    exit(0)
+
+path = paths[0]
+src = open(path).read()
+
+if "_dots_ocr_tie_weights" in src:
+    print("[patch-tie] already patched", flush=True)
+    exit(0)
+
+needle = 'raise ValueError("Following weights were not initialized from '
+if needle not in src:
+    print(f"[patch-tie] needle not found — skipping", flush=True)
+    exit(0)
+
+idx = src.index(needle)
+line_start = src.rfind("\n", 0, idx) + 1
+indent = " " * (idx - line_start)
+
+patch = (
+    f"{indent}# _dots_ocr_tie_weights: handle weights tied via tie_word_embeddings=True.\n"
+    f"{indent}# 1) Call tie_weights() on the HF model so lm_head.weight is linked to\n"
+    f"{indent}#    embed_tokens.weight (same tensor, same data_ptr).\n"
+    f"{indent}# 2) Any parameter whose data_ptr matches an already-loaded parameter is\n"
+    f"{indent}#    also considered loaded (tied), so remove it from not_loaded.\n"
+    f"{indent}try:\n"
+    f"{indent}    _hf = getattr(getattr(model, 'module', model), 'model', None)\n"
+    f"{indent}    if _hf is not None and hasattr(_hf, 'tie_weights'):\n"
+    f"{indent}        _hf.tie_weights()\n"
+    f"{indent}    _ptr_of_loaded = {{\n"
+    f"{indent}        model.get_parameter(_n).data_ptr()\n"
+    f"{indent}        for _n in loaded_weights\n"
+    f"{indent}        if hasattr(model, 'get_parameter') and _n in dict(model.named_parameters())\n"
+    f"{indent}    }}\n"
+    f"{indent}    for _n, _p in model.named_parameters():\n"
+    f"{indent}        if _n not in loaded_weights and _p.data_ptr() in _ptr_of_loaded:\n"
+    f"{indent}            loaded_weights.add(_n)\n"
+    f"{indent}except Exception:\n"
+    f"{indent}    pass\n"
+    f"{indent}"
+)
+
+patched = src[:idx] + patch + src[idx:]
+open(path, "w").write(patched)
+print(f"[patch-tie] {path} patched — tied weights handled before uninitialized check", flush=True)
+EOF
+
 # Patch vLLM backend to respect Triton's GPU assignment via CUDA_VISIBLE_DEVICES.
 # Without this, vLLM ignores instance_group gpus: [N] and always uses GPU 0.
 # Fix: https://github.com/triton-inference-server/server/issues/6855
