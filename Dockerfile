@@ -17,6 +17,8 @@ RUN pip install pymupdf --no-cache-dir
 RUN python3 - <<'EOF'
 import sys, glob, re
 
+utils_paths = glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/models/utils.py")
+
 # ── Fix A: patch load_weights in utils.py to remap unrecognised top-level keys ─
 # The mapper in TransformersForCausalLM has "vision_tower"→"model.vision_tower",
 # but if WeightsMapper prefix-matching requires an exact separator match and the
