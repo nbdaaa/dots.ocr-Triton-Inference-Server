@@ -216,79 +216,79 @@ EOF
 # Patch vLLM default_loader to handle tied embeddings (lm_head.weight tied to
 # embed_tokens.weight when tie_word_embeddings=True).  The checkpoint omits the
 # tied weight; vLLM's post-load validator raises ValueError seeing it unloaded.
-# Fix: call tie_weights() on the HF model then mark tied params as loaded.
+#
+# Root cause: the validator computes `not_initialized = all_params - loaded_weights`
+# BEFORE our code can run, so patching loaded_weights is too late.  Instead we
+# find the variable that holds the not-initialized set (read from the raise's
+# f-string), filter lm_head entries out of it, and only raise if non-empty.
 RUN python3 - <<'EOF'
-import glob
+import glob, re, sys
 
 paths = glob.glob("/usr/local/lib/python3*/dist-packages/vllm/model_executor/model_loader/default_loader.py")
 if not paths:
     print("[patch-tie] default_loader.py not found — skipping", flush=True)
-    exit(0)
+    sys.exit(0)
 
 path = paths[0]
 src = open(path).read()
 
-if "_dots_ocr_tie_weights" in src:
+if "_dots_ocr_skip_tied" in src:
     print("[patch-tie] already patched", flush=True)
-    exit(0)
+    sys.exit(0)
 
 needle = 'raise ValueError("Following weights were not initialized from '
 if needle not in src:
-    print(f"[patch-tie] needle not found — skipping", flush=True)
-    exit(0)
+    print("[patch-tie] needle not found — skipping", flush=True)
+    sys.exit(0)
 
 idx = src.index(needle)
-line_start = src.rfind("\n", 0, idx) + 1
-indent = " " * (idx - line_start)
 
-patch = (
-    f"{indent}# _dots_ocr_tie_weights: handle lm_head.weight tied to embed_tokens.weight\n"
-    f"{indent}# (tie_word_embeddings=True → checkpoint omits lm_head.weight).\n"
-    f"{indent}# Strategy A: call tie_weights() then detect via data_ptr matching.\n"
-    f"{indent}# Strategy B: brute-force — any param with 'lm_head' not yet in loaded_weights\n"
-    f"{indent}#              is force-added (safe: it IS initialized, just tied/shared).\n"
-    f"{indent}try:\n"
-    f"{indent}    # Step 1: tie the weights in the HF model\n"
-    f"{indent}    _hf = getattr(model, 'model', None)\n"
-    f"{indent}    if _hf is not None and hasattr(_hf, 'tie_weights'):\n"
-    f"{indent}        _hf.tie_weights()\n"
-    f"{indent}    # Step 2: rebuild param dict and find tied params via data_ptr\n"
-    f"{indent}    _params = dict(model.named_parameters())\n"
-    f"{indent}    _lm_in_model = [_n for _n in _params if 'lm_head' in _n]\n"
-    f"{indent}    _lm_in_loaded = [_w for _w in loaded_weights if 'lm_head' in _w]\n"
-    f"{indent}    print(f'[patch-tie] lm_head in model: {{_lm_in_model}}', flush=True)\n"
-    f"{indent}    print(f'[patch-tie] lm_head in loaded_weights: {{_lm_in_loaded}}', flush=True)\n"
-    f"{indent}    _loaded_ptrs = {{}}\n"
-    f"{indent}    for _n in list(loaded_weights):\n"
-    f"{indent}        _p = _params.get(_n)\n"
-    f"{indent}        if _p is not None:\n"
-    f"{indent}            _loaded_ptrs[_p.data_ptr()] = _n\n"
-    f"{indent}    _newly_tied = []\n"
-    f"{indent}    for _n, _p in _params.items():\n"
-    f"{indent}        if _n not in loaded_weights and _p.data_ptr() in _loaded_ptrs:\n"
-    f"{indent}            _newly_tied.append(_n)\n"
-    f"{indent}    for _n in _newly_tied:\n"
-    f"{indent}        loaded_weights.add(_n)\n"
-    f"{indent}    if _newly_tied:\n"
-    f"{indent}        print(f'[patch-tie] data_ptr resolved: {{_newly_tied}}', flush=True)\n"
-    f"{indent}    # Strategy B: force-add any lm_head params still missing from loaded_weights\n"
-    f"{indent}    _force_added = []\n"
-    f"{indent}    for _n in _lm_in_model:\n"
-    f"{indent}        if _n not in loaded_weights:\n"
-    f"{indent}            loaded_weights.add(_n)\n"
-    f"{indent}            _force_added.append(_n)\n"
-    f"{indent}    if _force_added:\n"
-    f"{indent}        print(f'[patch-tie] force-added lm_head params: {{_force_added}}', flush=True)\n"
-    f"{indent}except Exception as _e:\n"
-    f"{indent}    import traceback as _tb\n"
-    f"{indent}    print(f'[patch-tie FAILED] {{type(_e).__name__}}: {{_e}}', flush=True)\n"
-    f"{indent}    _tb.print_exc()\n"
-    f"{indent}"
+# Walk forward to find the closing paren of raise ValueError(...)
+depth = 0
+end = idx
+while end < len(src):
+    c = src[end]
+    if c == '(':
+        depth += 1
+    elif c == ')':
+        depth -= 1
+        if depth == 0:
+            end += 1
+            break
+    end += 1
+
+raise_stmt = src[idx:end]
+print(f"[patch-tie] raise statement: {raise_stmt!r}", flush=True)
+
+# Extract the variable name referenced in the f-string, e.g. {weights_not_loaded}
+var_match = re.search(r'\{(\w+)\}', raise_stmt)
+if not var_match:
+    print("[patch-tie] could not find variable in raise f-string — skipping", flush=True)
+    sys.exit(0)
+
+var_name = var_match.group(1)
+print(f"[patch-tie] not-initialized variable: {var_name!r}", flush=True)
+
+# Detect indentation of the raise line
+line_start = src.rfind('\n', 0, idx) + 1
+indent = ' ' * (idx - line_start)
+
+# Build patch: filter lm_head out of the not-initialized variable, then
+# only raise if anything remains (handles both set and dict types).
+filtered_raise = (
+    f"# _dots_ocr_skip_tied: lm_head.weight is tied to embed_tokens; skip it\n"
+    f"{indent}_dots_lm_skip = {{'model.lm_head.weight', 'lm_head.weight'}}\n"
+    f"{indent}if isinstance({var_name}, dict):\n"
+    f"{indent}    {var_name} = {{_k: _v for _k, _v in {var_name}.items() if _k not in _dots_lm_skip}}\n"
+    f"{indent}else:\n"
+    f"{indent}    {var_name} = {{_w for _w in {var_name} if _w not in _dots_lm_skip}}\n"
+    f"{indent}if {var_name}:\n"
+    f"{indent}    {raise_stmt}"
 )
 
-patched = src[:idx] + patch + src[idx:]
+patched = src[:idx] + filtered_raise + src[end:]
 open(path, "w").write(patched)
-print(f"[patch-tie] {path} patched — tied weights handled before uninitialized check", flush=True)
+print(f"[patch-tie] {path} patched — lm_head filtered from '{var_name}' before raise", flush=True)
 EOF
 
 # Patch vLLM backend to respect Triton's GPU assignment via CUDA_VISIBLE_DEVICES.
