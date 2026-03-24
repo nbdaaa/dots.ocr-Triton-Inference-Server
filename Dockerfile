@@ -8,8 +8,9 @@ RUN pip install pymupdf --no-cache-dir
 # passes video_processor, which defaults to None and then fails the strict type
 # check added in newer transformers.  Inserting an early return for None is safe:
 # the attribute is simply not registered on the processor instance.
+# Uses regex to match the method signature regardless of type annotations.
 RUN python3 - <<'EOF'
-import glob, sys
+import glob, re, sys
 
 paths = glob.glob("/usr/local/lib/python3*/dist-packages/transformers/processing_utils.py")
 if not paths:
@@ -20,16 +21,19 @@ path = paths[0]
 with open(path) as f:
     src = f.read()
 
-marker = "def check_argument_for_proper_class(self, attribute_name, arg):"
 if "_dots_ocr_allow_none" in src:
     print("[patch] processing_utils.py already patched — skipping", flush=True)
     sys.exit(0)
-if marker not in src:
-    print(f"[patch] {marker!r} not found — skipping", flush=True)
+
+# Match method def with any signature (with or without type annotations)
+m = re.search(r'def check_argument_for_proper_class\(self[^)]*\)[^:]*:', src)
+if not m:
+    print("[patch] check_argument_for_proper_class not found — skipping", flush=True)
     sys.exit(0)
 
-idx = src.index(marker)
-body_start = src.index("\n", idx) + 1
+print(f"[patch] found signature: {src[m.start():m.end()]!r}", flush=True)
+
+body_start = src.index("\n", m.end()) + 1
 j = body_start
 while j < len(src) and src[j] in (' ', '\t'):
     j += 1
