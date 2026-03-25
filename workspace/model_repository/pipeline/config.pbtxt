@@ -16,6 +16,6 @@ instance_group [
   { kind: KIND_CPU count: 4 }
 ]
 
-parameters: { key: "engine_model_name" value: { string_value: "dots_ocr" } }
+parameters: { key: "engine_model_name" value: { string_value: "dots_mocr" } }
 parameters: { key: "max_tokens"        value: { string_value: "24000" } }
 parameters: { key: "triton_http_url"   value: { string_value: "http://127.0.0.1:8000" } }

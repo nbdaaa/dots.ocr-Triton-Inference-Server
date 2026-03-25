@@ -20,10 +20,10 @@ else
 fi
 
 printf "backend: \"vllm\"\ninstance_group [\n%b\n]\n" "$INSTANCE_GROUPS" \
-    > /models/dots_ocr/config.pbtxt
+    > /models/dots_mocr/config.pbtxt
 
-echo "[entrypoint] dots_ocr config.pbtxt updated: $NUM_GPUS instance(s), one per GPU"
-cat /models/dots_ocr/config.pbtxt
+echo "[entrypoint] dots_mocr config.pbtxt updated: $NUM_GPUS instance(s), one per GPU"
+cat /models/dots_mocr/config.pbtxt
 
 # Scale pipeline CPU instances to match GPU count so pages are forwarded in parallel.
 # pipeline is just HTTP forwarding (CPU-bound), safe to run one instance per GPU.
@@ -47,7 +47,7 @@ instance_group [
   { kind: KIND_CPU count: ${PIPELINE_COUNT} }
 ]
 
-parameters: { key: "engine_model_name" value: { string_value: "dots_ocr" } }
+parameters: { key: "engine_model_name" value: { string_value: "dots_mocr" } }
 parameters: { key: "max_tokens"        value: { string_value: "24000" } }
 parameters: { key: "triton_http_url"   value: { string_value: "http://127.0.0.1:8000" } }
 EOF

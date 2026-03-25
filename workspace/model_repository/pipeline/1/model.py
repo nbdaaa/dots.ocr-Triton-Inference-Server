@@ -20,7 +20,7 @@ class TritonPythonModel:
         model_config = json.loads(args["model_config"])
         params = model_config.get("parameters", {})
 
-        self.engine_model_name = params.get("engine_model_name", {}).get("string_value", "dots_ocr")
+        self.engine_model_name = params.get("engine_model_name", {}).get("string_value", "dots_mocr")
 
         triton_http_port = os.environ.get("TRITON_HTTP_PORT")
         if triton_http_port:
