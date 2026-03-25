@@ -9,6 +9,5 @@
     "image": 1
   },
   "mm_processor_cache_gb": 0,
-  "enable_prefix_caching": false,
-  "chat_template_content_format": "string"
+  "enable_prefix_caching": false
 }

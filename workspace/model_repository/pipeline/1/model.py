@@ -1,7 +1,6 @@
 import http.client
 import json
 import os
-import re
 from urllib.parse import urlparse
 
 import numpy as np
@@ -13,6 +12,18 @@ def _to_str(x):
     if isinstance(x, bytes):
         return x.decode("utf-8")
     return str(x)
+
+
+def _image_media_type(image_b64: str) -> str:
+    if image_b64.startswith("/9j/"):
+        return "image/jpeg"
+    if image_b64.startswith("iVBOR"):
+        return "image/png"
+    if image_b64.startswith("R0lGOD"):
+        return "image/gif"
+    if image_b64.startswith("UklGR"):
+        return "image/webp"
+    return "image/jpeg"
 
 
 class TritonPythonModel:
@@ -28,80 +39,39 @@ class TritonPythonModel:
         else:
             self.triton_http_url = params.get("triton_http_url", {}).get("string_value", "http://127.0.0.1:8000")
 
-        self.generate_url = f"{self.triton_http_url}/v2/models/{self.engine_model_name}/generate_stream"
-        self.max_tokens   = int(params.get("max_tokens", {}).get("string_value", "4096"))
+        self.chat_url  = f"{self.triton_http_url}/v1/chat/completions"
+        self.max_tokens = int(params.get("max_tokens", {}).get("string_value", "4096"))
 
-        redis_url    = os.environ.get("REDIS_URL", "redis://localhost:6379")
-        self._redis  = redis.Redis.from_url(redis_url, decode_responses=True)
-
-    def _build_raw_prompt(self, prompt: str) -> str:
-        return (
-            f"<|im_start|>user\n"
-            f"<|img|><|imgpad|><|endofimg|>"
-            f"{prompt}"
-            f"<|im_end|>\n"
-            f"<|im_start|>assistant\n"
-        )
-
-    def _clean_output(self, text: str, user_prompt: str) -> str:
-        marker = "<|im_start|>assistant\n"
-        idx = text.find(marker)
-        if idx != -1:
-            text = text[idx + len(marker):]
-        else:
-            text = re.sub(
-                r"^(?:<\|img\|>)?(?:<\|imgpad\|>)*<\|endofimg\|>\s*",
-                "",
-                text,
-                flags=re.DOTALL,
-            )
-            prompt_pat = r"^\s*" + re.escape(user_prompt) + r"\s*"
-            text = re.sub(prompt_pat, "", text, count=1, flags=re.DOTALL)
-
-        text = re.sub(r"<\|im_end\|>.*$", "", text, flags=re.DOTALL)
-        return text.strip()
-
-    _JSON_SCHEMA = json.dumps({
-        "type": "array",
-        "items": {
-            "type": "object",
-            "properties": {
-                "bbox": {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": 4,
-                    "maxItems": 4
-                },
-                "category": {
-                    "type": "string",
-                    "enum": [
-                        "Caption", "Footnote", "Formula", "List-item",
-                        "Page-footer", "Page-header", "Picture",
-                        "Section-header", "Table", "Text", "Title"
-                    ]
-                },
-                "text": {"type": "string"}
-            },
-            "required": ["bbox", "category"]
-        }
-    })
+        redis_url   = os.environ.get("REDIS_URL", "redis://localhost:6379")
+        self._redis = redis.Redis.from_url(redis_url, decode_responses=True)
 
     def _call_engine(self, prompt: str, image_b64: str, request_id: str = "") -> str:
+        media_type = _image_media_type(image_b64)
         payload = {
-            "text_input": self._build_raw_prompt(prompt),
-            "image": [image_b64],
-            "parameters": {
-                "stream": True,          # streaming enables token-level cancel checks
-                # "temperature": 0.05,
-                # "top_p": 0.9,
-                "max_tokens": self.max_tokens,
-                # "repetition_penalty": 1.2,
-                "structured_outputs": json.dumps({"json": self._JSON_SCHEMA})
-            }
+            "model": self.engine_model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{media_type};base64,{image_b64}"}
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }
+            ],
+            "temperature": 0.1,
+            "top_p": 0.9,
+            "max_tokens": self.max_tokens,
+            "stream": True
         }
 
         body   = json.dumps(payload).encode("utf-8")
-        parsed = urlparse(self.generate_url)
+        parsed = urlparse(self.chat_url)
         conn   = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=300)
 
         try:
@@ -112,9 +82,9 @@ class TritonPythonModel:
                 detail = resp.read().decode("utf-8", errors="replace")
                 raise RuntimeError(f"Engine HTTPError {resp.status}: {detail}")
 
-            # Read NDJSON stream token by token.
+            # SSE stream: lines of "data: {...}" or "data: [DONE]"
             # Check Redis cancel key every 5 tokens to keep overhead low.
-            last_output = ""
+            output      = ""
             buf         = b""
             token_count = 0
 
@@ -127,8 +97,12 @@ class TritonPythonModel:
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     line = line.strip()
-                    if not line:
+                    if not line or not line.startswith(b"data: "):
                         continue
+
+                    data = line[6:]
+                    if data == b"[DONE]":
+                        break
 
                     token_count += 1
                     if request_id and token_count % 5 == 0:
@@ -137,28 +111,25 @@ class TritonPythonModel:
                             conn.close()
                             raise RuntimeError("Cancelled")
 
-                    if line.startswith(b"data: "):
-                        line = line[6:]
-                    if not line:
-                        continue
-
                     try:
-                        obj = json.loads(line)
+                        obj = json.loads(data)
                     except json.JSONDecodeError:
                         continue
 
                     if "error" in obj:
                         raise RuntimeError(f"Engine error: {obj['error']}")
-                    if "text_output" in obj:
-                        last_output += obj["text_output"]
+
+                    delta = obj.get("choices", [{}])[0].get("delta", {})
+                    if "content" in delta and delta["content"]:
+                        output += delta["content"]
 
         finally:
             conn.close()
 
-        if not last_output:
+        if not output:
             raise RuntimeError("Engine returned no output")
 
-        return last_output
+        return output
 
     def execute(self, requests):
         responses = []
@@ -182,12 +153,11 @@ class TritonPythonModel:
                 request_id_tensor = pb_utils.get_input_tensor_by_name(request, "REQUEST_ID")
                 request_id = _to_str(request_id_tensor.as_numpy().reshape(-1)[0]) if request_id_tensor is not None else ""
 
-                raw_text   = self._call_engine(prompt, image_b64, request_id)
-                clean_text = self._clean_output(raw_text, prompt)
+                text = self._call_engine(prompt, image_b64, request_id)
 
                 out_tensor = pb_utils.Tensor(
                     "TEXT",
-                    np.array([clean_text], dtype=object),
+                    np.array([text], dtype=object),
                 )
                 responses.append(pb_utils.InferenceResponse(output_tensors=[out_tensor]))
 
