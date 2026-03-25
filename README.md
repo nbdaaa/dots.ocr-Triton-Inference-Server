@@ -81,7 +81,7 @@ docker compose down
 
 ---
 
-## Chạy và test Triton Inference Server cho `dots_ocr`
+## Chạy và test Triton Inference Server cho `dots_mocr`
 
 Tài liệu này hướng dẫn cách:
 
@@ -108,11 +108,11 @@ workspace/model_repository
 
 ```text
 workspace/model_repository/
-├── pipeline/          # Python backend — nhận request, gọi dots_ocr
+├── pipeline/          # Python backend — nhận request, gọi dots_mocr
 │   ├── config.pbtxt
 │   └── 1/
 │       └── model.py
-└── dots_ocr/          # vLLM backend — chạy model rednote-hilab/dots.ocr
+└── dots_mocr/          # vLLM backend — chạy model rednote-hilab/dots.mocr
     ├── config.pbtxt
     └── 1/
         └── model.json
@@ -166,8 +166,8 @@ docker run --rm --gpus all \
 * `--ipc=host`: chia sẻ IPC
 * `-v /home/workspace/model_repository:/models`: mount model repository vào container
 * `-v ~/.cache/huggingface:/root/.cache/huggingface`: tái sử dụng cache model
-* `HTTP_PORT=54280`: đặt biến shell một lần duy nhất — cả `--http-port` lẫn internal call của `dots_ocr` → `dots_ocr_engine` đều dùng cổng này
-* `-e TRITON_HTTP_PORT=$HTTP_PORT`: truyền cổng vào container để `dots_ocr` tự cấu hình URL nội bộ
+* `HTTP_PORT=54280`: đặt biến shell một lần duy nhất — cả `--http-port` lẫn internal call của `dots_mocr` → `dots_mocr_engine` đều dùng cổng này
+* `-e TRITON_HTTP_PORT=$HTTP_PORT`: truyền cổng vào container để `dots_mocr` tự cấu hình URL nội bộ
 
 > Giữ terminal này mở trong suốt quá trình test.
 
@@ -192,7 +192,7 @@ curl -s http://127.0.0.1:54280/v2/repository/index
 Bạn nên thấy:
 
 * `pipeline`
-* `dots_ocr`
+* `dots_mocr`
 
 ---
 

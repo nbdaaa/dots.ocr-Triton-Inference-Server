@@ -78,25 +78,25 @@ dynamic_batching {
   max_queue_delay_microseconds: 500000
 }
 
-parameters: { key: \"model_name\" value: { string_value: \"rednote-hilab/dots.ocr\" } }
+parameters: { key: \"model_name\" value: { string_value: \"rednote-hilab/dots.mocr\" } }
 parameters: { key: \"max_tokens\"  value: { string_value: \"24000\" } }
 " "$MAX_BATCH" "$INSTANCE_GROUPS" "$PREFERRED_SIZES" > /models/pipeline/config.pbtxt
 
 echo "[entrypoint] pipeline config.pbtxt updated: ${NUM_GPUS:-0} GPU(s), max_batch_size=${MAX_BATCH}"
 cat /models/pipeline/config.pbtxt
 
-# ── Patch dots.ocr custom module imports ─────────────────────────────────────
-echo "[fix] Patching dots.ocr module imports..."
+# ── Patch dots.mocr custom module imports ─────────────────────────────────────
+echo "[fix] Patching dots.mocr module imports..."
 python3 - <<'PYEOF'
 import sys, os, re
 
-MODULES_DIR = "/root/.cache/huggingface/modules/transformers_modules/rednote-hilab/dots.ocr"
+MODULES_DIR = "/root/.cache/huggingface/modules/transformers_modules/rednote-hilab/dots.mocr"
 
 if not os.path.isdir(MODULES_DIR):
-    print("[fix] Pre-caching dots.ocr custom modules...", flush=True)
+    print("[fix] Pre-caching dots.mocr custom modules...", flush=True)
     try:
         from transformers import AutoConfig
-        AutoConfig.from_pretrained("rednote-hilab/dots.ocr", trust_remote_code=True)
+        AutoConfig.from_pretrained("rednote-hilab/dots.mocr", trust_remote_code=True)
     except Exception as e:
         print(f"[fix] Pre-cache done (import error expected): {type(e).__name__}", flush=True)
 
@@ -114,11 +114,11 @@ for hash_dir in os.listdir(MODULES_DIR):
         fpath = os.path.join(hash_path, fname)
         with open(fpath) as f:
             content = f.read()
-        if "_dots_ocr_fix_applied" in content:
+        if "_dots_mocr_fix_applied" in content:
             continue
 
         header = (
-            "# _dots_ocr_fix_applied\n"
+            "# _dots_mocr_fix_applied\n"
             "import sys as _sys, os as _os\n"
             "_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))\n"
         )
@@ -126,22 +126,22 @@ for hash_dir in os.listdir(MODULES_DIR):
         fixed = re.sub(r"^from \. import ([\w]+)", r"import \1", fixed, flags=re.MULTILINE)
 
         footer = ""
-        if "class DotsOCRConfig" in content:
+        if "class DotsMOCRConfig" in content:
             footer += """
 try:
     from transformers import AutoConfig as _AutoConfig
-    _AutoConfig.register("dots_ocr", DotsOCRConfig, exist_ok=True)
+    _AutoConfig.register("dots_mocr", DotsMOCRConfig, exist_ok=True)
 except Exception:
     pass
 
 try:
-    _orig_dots_init = DotsOCRConfig.__init__
+    _orig_dots_init = DotsMOCRConfig.__init__
     def _patched_dots_init(self, *_a, **_kw):
         _orig_dots_init(self, *_a, **_kw)
         _am = getattr(self, "auto_map", None)
         if isinstance(_am, dict) and "AutoModelForCausalLM" in _am and "AutoModel" not in _am:
             _am["AutoModel"] = _am["AutoModelForCausalLM"]
-    DotsOCRConfig.__init__ = _patched_dots_init
+    DotsMOCRConfig.__init__ = _patched_dots_init
 except Exception:
     pass
 """
@@ -150,7 +150,7 @@ except Exception:
             f.write(header + fixed + footer)
         print(f"[fix] Patched {fpath}", flush=True)
 
-print("[fix] dots.ocr module patch complete", flush=True)
+print("[fix] dots.mocr module patch complete", flush=True)
 PYEOF
 
 # ── Runtime dependencies ──────────────────────────────────────────────────────

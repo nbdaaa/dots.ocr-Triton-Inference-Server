@@ -1,5 +1,5 @@
 """
-dots.ocr — Triton Python backend (pure PyTorch / HuggingFace) with dynamic batching
+dots.mocr — Triton Python backend (pure PyTorch / HuggingFace) with dynamic batching
 
 When Triton's dynamic_batching accumulates multiple pending requests it calls
 execute() with all of them at once.  We run them as a single model.generate()
@@ -44,7 +44,7 @@ class TritonPythonModel:
         def _p(key: str, default: str) -> str:
             return params.get(key, {}).get("string_value", default)
 
-        self.model_name     = _p("model_name", "rednote-hilab/dots.ocr")
+        self.model_name     = _p("model_name", "rednote-hilab/dots.mocr")
         self.max_new_tokens = int(_p("max_tokens", "24000"))
 
         device_id   = str(args.get("model_instance_device_id", "0"))

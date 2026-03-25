@@ -34,7 +34,7 @@ path = paths[0]
 with open(path) as f:
     src = f.read()
 
-if "_dots_ocr_allow_none" in src:
+if "_dots_mocr_allow_none" in src:
     print("[patch] processing_utils.py already patched — skipping", flush=True)
     sys.exit(0)
 
@@ -60,7 +60,7 @@ while j < len(src) and src[j] in (' ', '\t'):
     j += 1
 indent = src[body_start:j]
 guard = (
-    f"{indent}if {arg_param} is None:  # _dots_ocr_allow_none\n"
+    f"{indent}if {arg_param} is None:  # _dots_mocr_allow_none\n"
     f"{indent}    return\n"
 )
 patched = src[:body_start] + guard + src[body_start:]
