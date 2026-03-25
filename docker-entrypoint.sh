@@ -57,6 +57,27 @@ echo "[entrypoint] pipeline config.pbtxt updated: ${PIPELINE_COUNT} CPU instance
 # Install redis-py for pipeline cancel support
 pip install redis --quiet --no-cache-dir
 
+# ── Start Triton OpenAI-compatible frontend ───────────────────────────────────
+# Exposes /v1/chat/completions with proper chat template support.
+# Runs as a background process; Triton takes over as PID 1 via exec below.
+OPENAI_PORT=${OPENAI_FRONTEND_PORT:-9000}
+OPENAI_DIR="/opt/tritonserver/python/openai"
+
+if [ -d "${OPENAI_DIR}" ]; then
+    if [ -f "${OPENAI_DIR}/requirements.txt" ]; then
+        pip install -r "${OPENAI_DIR}/requirements.txt" --quiet --no-cache-dir
+    fi
+    cd "${OPENAI_DIR}"
+    python3 openai_frontend/main.py \
+        --model-repository /models \
+        --tokenizer rednote-hilab/dots.mocr \
+        --port "${OPENAI_PORT}" &
+    echo "[entrypoint] OpenAI frontend started on port ${OPENAI_PORT}"
+    cd /
+else
+    echo "[entrypoint] WARNING: OpenAI frontend not found at ${OPENAI_DIR} — chat template will not be applied"
+fi
+
 # Start Triton
 exec tritonserver \
   --model-repository=/models \

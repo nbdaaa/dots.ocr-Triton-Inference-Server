@@ -33,13 +33,16 @@ class TritonPythonModel:
 
         self.engine_model_name = params.get("engine_model_name", {}).get("string_value", "dots_mocr")
 
-        triton_http_port = os.environ.get("TRITON_HTTP_PORT")
-        if triton_http_port:
-            self.triton_http_url = f"http://127.0.0.1:{triton_http_port}"
+        openai_port = os.environ.get("OPENAI_FRONTEND_PORT")
+        if openai_port:
+            self.chat_url = f"http://127.0.0.1:{openai_port}/v1/chat/completions"
         else:
-            self.triton_http_url = params.get("triton_http_url", {}).get("string_value", "http://127.0.0.1:8000")
-
-        self.chat_url  = f"{self.triton_http_url}/v1/chat/completions"
+            triton_http_port = os.environ.get("TRITON_HTTP_PORT")
+            base_url = (
+                f"http://127.0.0.1:{triton_http_port}" if triton_http_port
+                else params.get("triton_http_url", {}).get("string_value", "http://127.0.0.1:8000")
+            )
+            self.chat_url = f"{base_url}/v1/chat/completions"
         self.max_tokens = int(params.get("max_tokens", {}).get("string_value", "4096"))
 
         redis_url   = os.environ.get("REDIS_URL", "redis://localhost:6379")
